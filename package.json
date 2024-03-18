@@ -1,0 +1,33 @@
+{
+  "name": "racecast-emitter",
+  "version": "1.0.0",
+  "description": "Onboard IoT project to capture and transmit data from the race car to the receiver.",
+  "main": "main.js",
+  "type": "module",
+  "author": {
+    "name": "Mathis Serrieres Maniecki",
+    "email": "contact@minarox.fr",
+    "url": "https://minarox.fr/"
+  },
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "i2c-bus": "^5.2.3",
+    "i2c-mpu6050": "^2.3.0",
+    "livekit-server-sdk": "^2.1.1",
+    "puppeteer-core": "^22.5.0"
+  },
+  "bugs": {
+    "url": "https://github.com/RaceCast/Emitter/issues",
+    "email": "contact@minarox.fr"
+  },
+  "homepage": "https://github.com/RaceCast/Emitter#readme",
+  "readme": "./README.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RaceCast/Emitter.git"
+  }
+}
