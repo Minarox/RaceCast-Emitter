@@ -12,7 +12,7 @@
 ![Project License](https://img.shields.io/github/license/RaceCast/Emitter?label=Licence)
 
   <p align="center">
-    Onboard IoT project to capture and transmit data from the race car to the receiver.
+    Onboard autonomous IoT project to capture and transmit data and media stream from the race car.
     <br />
     <a href="https://rallye.minarox.fr/"><strong>rallye.minarox.fr »</strong></a>
   </p>
@@ -43,23 +43,15 @@
 
 ## About The Project
 
-Node.js scripts for acquiring and transmitting data from the various sensors mounted on the embedded system.
+Node.js scripts for acquiring and transmitting data and media stream from the various sensors mounted on the embedded system from the race car through cellular network.
 
 ### Features
 
-- Collects and processes data from the MPU6050 sensor
-- Collects and processes data from the GPS sensor
-- Send data from the embedded system to the [Receiver](https://github.com/RaceCast/Receiver):
-  - MPU6050 data (accelerometer, gyroscope, rotation, temperature)
-  - GPS data (latitude, longitude, altitude, speed)
-  - Latency value between the emitter and the receiver
+- TODO
 
 ### Tech Stack
 
-- [Node.js](https://nodejs.org/)
-  - [i2c-bus](https://www.npmjs.com/package/i2c-bus)
-  - [i2c-mpu6050](https://www.npmjs.com/package/i2c-mpu6050)
-- [socat](http://www.dest-unreach.org/socat/)
+- TODO
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
@@ -67,64 +59,15 @@ Node.js scripts for acquiring and transmitting data from the various sensors mou
 
 ### Prerequisites
 
-- Install [Node.js](https://nodejs.org/) with [npm](https://www.npmjs.com/)
-
-```bash
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt-get install -y nodejs
-```
-
-- Install [socat](http://www.dest-unreach.org/socat/)
-
-```bash
-  sudo apt-get install socat
-```
-
-- Create a `.env` file at the root of the project to set emitter authentication key for
-  the [Receiver](https://github.com/RaceCast/Receiver)
-
-````env
-  TOKEN="your-auth-key"
-````
-
-- Install dependencies
-
-````bash
-  npm install
-````
-
-- Lint and fix files
-
-````bash
-  npm run lint
-````
-
-- Compile TypeScript files
-
-````bash
-  npm run compile
-````
+- TODO
 
 ### Test scripts
 
-- Start individual scripts (sudo is required)
-
-````bash
-  node scripts/file.js # Replace file.js by the script you want to test
-````
+- TODO
 
 ### Deploy on embedded system
 
-- Start main script (sudo is required)
-
-````bash
-  npm run start
-  # or
-  node main.js
-````
-
-The script will automatically fetch and send data from the sensors to
-the [Receiver](https://github.com/RaceCast/Receiver).
+- TODO
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
