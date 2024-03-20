@@ -23,7 +23,7 @@ setup()
 /**
  * @function cleanUp
  * @description Cleanup and exit the script
- * @return {Promise<void>}
+ * @returns {Promise<void>}
  */
 async function cleanUp(): Promise<void> {
     if (cleanupCalled) {

@@ -1,4 +1,4 @@
-import {ExecException, exec} from "node:child_process";
+import {exec, ExecException} from "node:child_process";
 
 /**
  * @name LogType
@@ -16,7 +16,7 @@ export enum LogType {
  * @param {string} message - message to log
  * @param {LogType} type - type of log message
  * @param {boolean} exiting - is the script exiting
- * @return {void}
+ * @returns {void}
  */
 export function logMessage(message: string, type: LogType = LogType.INFO, exiting: boolean = false): void {
     if (process[type].isTTY) {
@@ -28,7 +28,7 @@ export function logMessage(message: string, type: LogType = LogType.INFO, exitin
  * @function execute
  * @description Execute command on the host
  * @param {string} command - Command to execute
- * @return {Promise<string>} result of the command
+ * @returns {Promise<string>} result of the command
  */
 export function execute(command: string): Promise<string> {
     return new Promise((resolve, reject): void => {
