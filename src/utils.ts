@@ -28,7 +28,7 @@ export function logMessage(message: string, type: LogType = LogType.INFO, exitin
  * @function execute
  * @description Execute command on the host
  * @param {string} command - Command to execute
- * @return {Promise<string>}
+ * @return {Promise<string>} result of the command
  */
 export function execute(command: string): Promise<string> {
     return new Promise((resolve, reject): void => {
