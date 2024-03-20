@@ -1,14 +1,5 @@
 import {exec, ExecException} from "node:child_process";
-
-/**
- * @name LogType
- * @description Type of log message
- * @enum {string}
- */
-export enum LogType {
-    INFO = 'stdout',
-    ERROR = 'stderr'
-}
+import {LogType} from "./types/log";
 
 /**
  * @function logMessage

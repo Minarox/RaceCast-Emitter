@@ -5,18 +5,18 @@ import {GPS, Network, Signal, Type} from "../types/modem";
 let data_count: number = 0;
 
 /**
- * @function getDatas
+ * @function getModemDatas
  * @description Get network, signal and GPS data from the modem
  * @returns {Promise<void>}
  */
-export async function getDatas(): Promise<void> {
+export default async function getModemDatas(): Promise<void> {
     // Get network data
     if (data_count === 0) {
         const networkResponse: string = await executeAT(`AT+QNWINFO`);
         if (networkResponse.trim().startsWith("+QNWINFO:")) {
             const data: Array<string> = networkResponse.trim().split(":")[1].trim().split(",");
             const network: Network = {
-                access: data[0].slice(1, -1),
+                type: data[0].slice(1, -1),
                 band: data[2].slice(1, -1),
                 channel: parseInt(data[3].slice(1, -6))
             };
@@ -35,7 +35,7 @@ export async function getDatas(): Promise<void> {
         if (signalResponse.trim().startsWith("+CSQ:")) {
             const data: Array<string> = signalResponse.trim().split(":")[1].trim().split(",");
             const signal: Signal = {
-                signal: parseInt(data[0]),
+                strength: parseInt(data[0]),
                 error_rate: parseInt(data[1])
             };
 
@@ -68,7 +68,4 @@ export async function getDatas(): Promise<void> {
     if (data_count === 2) {
         data_count = 0;
     }
-
-    // Recursive call
-    setTimeout(getDatas);
 }

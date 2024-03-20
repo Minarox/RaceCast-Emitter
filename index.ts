@@ -1,7 +1,9 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
-import {logMessage, LogType} from "./src/utils";
-import {getDatas} from "./src/scripts/modem";
+import {logMessage} from "./src/utils";
+import {LogType} from "./src/types/log";
+import getModemDatas from "./src/scripts/modem";
+import getSensorDatas from "./src/scripts/sensor";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -21,7 +23,27 @@ setup()
         logMessage(`Launching scripts...`);
 
         // Modem script
-        getDatas();
+        async function loopModemDatas(): Promise<void> {
+            await getModemDatas();
+            setTimeout((): void => {
+                if (!cleanupCalled) {
+                    loopModemDatas();
+                }
+            });
+        }
+
+        // Sensor script
+        async function loopSensorDatas(): Promise<void> {
+            await getSensorDatas();
+            setTimeout((): void => {
+                if (!cleanupCalled) {
+                    loopSensorDatas();
+                }
+            }, 125);
+        }
+
+        loopModemDatas();
+        loopSensorDatas();
 
         console.log('Hello World!');
     });

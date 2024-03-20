@@ -1,4 +1,5 @@
-import {execute, executeAT, logMessage, LogType} from "../utils";
+import {execute, executeAT, logMessage} from "../utils";
+import {LogType} from "../types/log";
 
 /**
  * @function setupAudio
