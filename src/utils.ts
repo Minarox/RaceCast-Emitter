@@ -1,3 +1,5 @@
+import {ExecException, exec} from "node:child_process";
+
 /**
  * @name LogType
  * @description Type of log message
@@ -20,4 +22,21 @@ export function logMessage(message: string, type: LogType = LogType.INFO, exitin
     if (process[type].isTTY) {
         process[type].write(`${exiting ? '\n' : ''}[${new Date().toLocaleTimeString('fr-FR')}] ${message}\n`);
     }
+}
+
+/**
+ * @function execute
+ * @description Execute command on the host
+ * @param {string} command - Command to execute
+ * @return {Promise<string>}
+ */
+export function execute(command: string): Promise<string> {
+    return new Promise((resolve, reject): void => {
+        exec(command, (error: ExecException | null, stdout: string, stderr: string): void => {
+            if (error || stderr) {
+                reject(error || stderr);
+            }
+            resolve(stdout);
+        });
+    });
 }
