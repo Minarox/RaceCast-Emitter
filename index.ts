@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
-import setup from "./src/scripts/setup";
+import {clearSetup, setup} from "./src/scripts/setup";
 import {logMessage, LogType} from "./src/utils";
+import {getDatas} from "./src/scripts/modem";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -16,8 +17,13 @@ let cleanupCalled: boolean = false;
 
 // Setup environment and run scripts
 setup()
-    .then((): void => {
-        console.log("Hello World!");
+    .then(async (): Promise<void> => {
+        logMessage(`Launching scripts...`);
+
+        // Modem script
+        getDatas();
+
+        console.log('Hello World!');
     });
 
 /**
@@ -30,7 +36,9 @@ async function cleanUp(): Promise<void> {
         return;
     }
     cleanupCalled = true;
-    logMessage(`Cleanup and exiting...`, LogType.INFO, true);
+
+    // Clear environment
+    await clearSetup();
 
     process.exit();
 }

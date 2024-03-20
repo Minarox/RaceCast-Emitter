@@ -40,3 +40,13 @@ export function execute(command: string): Promise<string> {
         });
     });
 }
+
+/**
+ * @function executeAT
+ * @description Execute AT command and return response
+ * @param {string} command - AT command to execute
+ * @returns {Promise<string>} modem response
+ */
+export function executeAT(command: string): Promise<string> {
+    return execute(`echo '${command}' | socat - /dev/ttyUSB2,crnl`);
+}

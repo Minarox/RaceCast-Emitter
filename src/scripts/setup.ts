@@ -1,28 +1,46 @@
-import {execute, logMessage, LogType} from "../utils";
+import {execute, executeAT, logMessage, LogType} from "../utils";
 
 /**
- * @function restartAudio
+ * @function setupAudio
  * @description Restart audio services
  * @returns {Promise<void>}
  */
-async function restartAudio(): Promise<void> {
+async function setupAudio(): Promise<void> {
+    await execute('systemctl --user restart pulseaudio.service');
     await execute('systemctl --user restart wireplumber.service');
     await execute('systemctl --user restart pipewire.service');
     await execute('systemctl --user restart pipewire-pulse.service');
-    await execute('systemctl --user restart pulseaudio.service');
 }
 
 /**
- * @function setModemSettings
+ * @function setupModem
  * @description Set modem settings for serial communication
  * @returns {Promise<void>}
  */
-async function setModemSettings(): Promise<void> {
-    const echoResponse: string = await execute(`echo 'ATE0' | socat - /dev/ttyUSB2,crnl`);
-    const scanModeResponse: string = await execute(`echo 'AT+QCFG="nwscanmode",0' | socat - /dev/ttyUSB2,crnl`);
+async function setupModem(): Promise<void> {
+    const echoResponse: string = await executeAT(`ATE0`);
+    const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",0`);
 
     if (echoResponse.trim() !== 'OK' || scanModeResponse.trim() !== 'OK') {
         throw new Error(`Unable to set modem settings`);
+    }
+}
+
+/**
+ * @function setupGPS
+ * @description Setup GPS data format and enable GPS
+ * @returns {Promise<void>}
+ */
+async function setupGPS(): Promise<void> {
+    const gpsState: string = await executeAT(`AT+QGPS?`);
+    if (gpsState.trim().startsWith("+QGPS: 0")) {
+        // Set data format and enable GPS
+        await executeAT(`AT+QGPSCFG=\"nmeasrc\",1`);
+        await executeAT(`AT+QGPS=1`);
+    } else {
+        // Disable GPS and re-init
+        await executeAT(`AT+QGPSEND`);
+        await setupGPS();
     }
 }
 
@@ -32,7 +50,7 @@ async function setModemSettings(): Promise<void> {
  * @returns {Promise<true>} true when the modem is connected
  */
 async function waitForConnection(): Promise<true> {
-    const connectedResponse: string = await execute(`echo 'AT+CGATT?' | socat - /dev/ttyUSB2,crnl`);
+    const connectedResponse: string = await executeAT(`AT+CGATT?`);
 
     if (!connectedResponse.trim().startsWith('+CGATT: 1')) {
         await waitForConnection();
@@ -45,17 +63,33 @@ async function waitForConnection(): Promise<true> {
  * @description Setup program environment
  * @returns {Promise<void>}
  */
-export default async function setup(): Promise<void> {
+export async function setup(): Promise<void> {
     logMessage(`Setup environment...`);
 
     try {
-        await restartAudio();
-        await setModemSettings();
+        await setupAudio();
+        await setupModem();
+        await setupGPS();
         await waitForConnection();
     } catch (error) {
         logMessage(`Error setting up environment:\n${error}`, LogType.ERROR, true);
         process.exit(1);
     }
+}
 
-    logMessage(`Launching program...`);
+/**
+ * @function clearSetup
+ * @description Clear program environment
+ * @returns {Promise<void>}
+ */
+export async function clearSetup(): Promise<void> {
+    logMessage(`Clear environment...`, LogType.INFO, true);
+
+    try {
+        await executeAT(`AT+QGPSEND`);
+        await executeAT(`AT+QCFG="nwscanmode",0`);
+    } catch (error) {
+        logMessage(`Error clearing environment:\n${error}`, LogType.ERROR, true);
+        process.exit(1);
+    }
 }
