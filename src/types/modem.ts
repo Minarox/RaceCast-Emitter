@@ -1,3 +1,9 @@
+export enum Type {
+    NETWORK = 'network',
+    SIGNAL = 'signal',
+    GPS = 'gps'
+}
+
 export interface Network {
     access: string;
     band: string;
