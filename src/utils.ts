@@ -1,5 +1,7 @@
 /**
+ * @name LogType
  * @description Type of log message
+ * @enum {string}
  */
 export enum LogType {
     INFO = 'stdout',
@@ -7,6 +9,7 @@ export enum LogType {
 }
 
 /**
+ * @function logMessage
  * @description Log message to the console
  * @param {string} message - message to log
  * @param {LogType} type - type of log message

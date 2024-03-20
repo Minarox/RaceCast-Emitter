@@ -3,6 +3,7 @@ import {ExecException} from "node:child_process";
 import {logMessage, LogType} from "../utils";
 
 /**
+ * @function execWrapper
  * @description Wrapper for exec function
  * @param {string} command - Command to execute
  * @return {Promise<string>} output of the command
@@ -16,6 +17,7 @@ function execWrapper(command: string): Promise<string> {
 }
 
 /**
+ * @function restartAudio
  * @description Restart audio services
  * @return {Promise<void>}
  */
@@ -26,6 +28,7 @@ async function restartAudio(): Promise<void> {
 }
 
 /**
+ * @function setModemSettings
  * @description Set modem settings for serial communication
  * @return {Promise<void>}
  */
@@ -40,6 +43,7 @@ async function setModemSettings(): Promise<void> {
 }
 
 /**
+ * @function waitForConnection
  * @description Wait for modem connection
  * @return {Promise<true>} true when the modem is connected
  */
@@ -52,6 +56,7 @@ async function waitForConnection(): Promise<true> {
 }
 
 /**
+ * @function setup
  * @description Setup program environment
  * @return {Promise<void>}
  */

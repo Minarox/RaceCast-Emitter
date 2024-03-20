@@ -21,10 +21,11 @@ setup()
     });
 
 /**
+ * @function cleanUp
  * @description Cleanup and exit the script
  * @return {Promise<void>}
  */
-async function cleanup(): Promise<void> {
+async function cleanUp(): Promise<void> {
     if (cleanupCalled) {
         return;
     }
@@ -37,5 +38,5 @@ async function cleanup(): Promise<void> {
 // Process events
 ["exit", "SIGINT", "SIGUSR1", "SIGUSR2", "uncaughtException"]
     .forEach((type: string): void => {
-        process.on(type, cleanup);
+        process.on(type, cleanUp);
     });
