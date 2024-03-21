@@ -19,8 +19,5 @@ pnpm-debug.log*
 # local env file
 .env
 
-# Javascript file
-server.js
-
-# Front-end folder
-public
+# Build folder
+dist
