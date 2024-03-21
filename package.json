@@ -20,7 +20,9 @@
   },
   "main": "index.js",
   "scripts": {
-    "start": "ts-node index.ts"
+    "dev": "ts-node index.ts",
+    "build": "npx tsc",
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
@@ -31,7 +33,6 @@
     "@types/i2c-bus": "^5.1.2",
     "@types/node": "^20.11.30",
     "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.4.2"
+    "typescript": "^5.4.3"
   }
 }

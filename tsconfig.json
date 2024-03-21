@@ -3,7 +3,9 @@
     // Language and Environment
     "target": "es2016",
     "module": "commonjs",
+    "outDir": "dist",
     "esModuleInterop": true,
+    "removeComments": true,
     // Best practices
     "strict": true,
     "skipLibCheck": true,
@@ -20,9 +22,11 @@
     "strictFunctionTypes": true
   },
   "include": [
+    "index.ts",
     "src/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "dist"
   ]
 }

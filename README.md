@@ -61,7 +61,7 @@ Node.js scripts for acquiring and transmitting data and media stream from the va
 
 - TODO
 
-Add user to "dialout" group to access serial ports :
+Add user to "dialout" group to allow communication with modem's serial ports :
 ```bash
 sudo gpasswd -a username dialout
 ```
