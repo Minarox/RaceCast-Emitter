@@ -11,8 +11,6 @@ export enum Type {
 
 /**
  * Network data returned by the modem
- * 
- * @enum {string}
  */
 export interface Network {
     type: string;
@@ -22,8 +20,6 @@ export interface Network {
 
 /**
  * Signal data returned by the modem
- * 
- * @enum {string}
  */
 export interface Signal {
     strength: number;
@@ -32,8 +28,6 @@ export interface Signal {
 
 /**
  * GPS data returned by the modem
- * 
- * @enum {string}
  */
 export interface GPS {
     latitude: number;

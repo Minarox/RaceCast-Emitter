@@ -1,5 +1,5 @@
 import {execute, executeAT, logMessage, wait} from "../utils";
-import {LogType} from "../types/log";
+import {LogType} from "../types/global";
 
 /**
  * Restart audio services of the system
@@ -18,7 +18,7 @@ async function setupAudio(): Promise<void> {
  * 
  * @returns {Promise<void>}
  */
-async function setupModem(): Promise<void> {
+export async function setupModem(): Promise<void> {
     const echoResponse: string = await executeAT(`ATE0`);
     const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",0`);
 
@@ -32,7 +32,7 @@ async function setupModem(): Promise<void> {
  * 
  * @returns {Promise<void>}
  */
-async function setupGPS(): Promise<void> {
+export async function setupGPS(): Promise<void> {
     const gpsState: string = await executeAT(`AT+QGPS?`);
     if (gpsState.trim().startsWith("+QGPS: 0")) {
         // Set data format and enable GPS
@@ -88,7 +88,9 @@ export async function clearSetup(): Promise<void> {
     wait(800);
 
     try {
+        // Disable GPS
         await executeAT(`AT+QGPSEND`);
+        // Search all network type
         await executeAT(`AT+QCFG="nwscanmode",0`);
     } catch (error) {
         logMessage(`Error clearing environment:\n${error}`, LogType.ERROR, true);

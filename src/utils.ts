@@ -1,5 +1,5 @@
 import {exec, ExecException} from "node:child_process";
-import {LogType} from "./types/log";
+import {LogType} from "./types/global";
 
 /**
  * Log message to the console

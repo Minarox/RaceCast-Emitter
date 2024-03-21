@@ -75,3 +75,5 @@ export default async function getSensorDatas(): Promise<void> {
     // Show data
     process.stdout.write(JSON.stringify(data));
 }
+
+setTimeout(getSensorDatas, 100);

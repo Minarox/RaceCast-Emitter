@@ -1,8 +1,10 @@
 import {executeAT} from "../utils";
 import {GPS, Network, Signal, Type} from "../types/modem";
+import {setupGPS, setupModem} from "./setup";
 
-// Count data to switch between commands
-let data_count: number = 0;
+// Variables
+const args: Array<string> = process.argv.slice(2);
+let data_count: number = 0;     // Count data to switch between commands
 
 /**
  * Get network, signal and GPS data from the modem
@@ -68,4 +70,18 @@ export default async function getModemDatas(): Promise<void> {
     if (data_count === 2) {
         data_count = 0;
     }
+
+    // Recursive call
+    setTimeout(getModemDatas);
 }
+
+async function start(): Promise<void> {
+    if (args[0] !== "--no-setup") {
+        await setupModem();
+        await setupGPS();
+    }
+
+    setTimeout(getModemDatas);
+}
+
+start();
