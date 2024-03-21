@@ -5,8 +5,8 @@ import {GPS, Network, Signal, Type} from "../types/modem";
 let data_count: number = 0;
 
 /**
- * @function getModemDatas
- * @description Get network, signal and GPS data from the modem
+ * Get network, signal and GPS data from the modem
+ * 
  * @returns {Promise<void>}
  */
 export default async function getModemDatas(): Promise<void> {

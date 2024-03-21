@@ -1,6 +1,6 @@
 /**
- * @name LogType
- * @description Type of log message
+ * Type of log message
+ * 
  * @enum {string}
  */
 export enum LogType {

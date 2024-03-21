@@ -1,14 +1,19 @@
 import i2c, {I2CBus} from "i2c-bus";
 import Mpu6050 from "i2c-mpu6050";
 
-// Define global variables
+// Variables
 const address: number = 0x68;
 const bus: I2CBus = i2c.openSync(1);
 const sensor = new Mpu6050(bus, address);
 const temperatures: Array<number> = [];
 let reverse: number;
 
-// Limit all values to 2 decimals
+/**
+ * Reduces all decimals found in the object
+ * 
+ * @param {any} data - Object containing floats
+ * @returns {void}
+ */
 function limitDecimals(data: any): void {
     for (const key in data) {
         if (typeof data[key] === "object") {
@@ -19,7 +24,12 @@ function limitDecimals(data: any): void {
     }
 }
 
-// Smooth temperature values
+/**
+ * Smoothes 25 lasts temperature values
+ * 
+ * @param {number} newTemp - Value to be added to the average
+ * @returns {number} Average temperature
+ */
 function averageTemperature(newTemp: number): number {
     temperatures.push(newTemp);
     if (temperatures.length > 25) {
@@ -30,7 +40,11 @@ function averageTemperature(newTemp: number): number {
     return parseFloat(average.toFixed(2));
 }
 
-// Read sensor data
+/**
+ * Read datas from the sensor
+ * 
+ * @returns {void}
+ */
 export default function getSensorDatas(): void {
     const data: any = sensor.readSync();
     delete data.gyro.z;

@@ -2,8 +2,8 @@ import {execute, executeAT, logMessage} from "../utils";
 import {LogType} from "../types/log";
 
 /**
- * @function setupAudio
- * @description Restart audio services
+ * Restart audio services of the system
+ * 
  * @returns {Promise<void>}
  */
 async function setupAudio(): Promise<void> {
@@ -14,8 +14,8 @@ async function setupAudio(): Promise<void> {
 }
 
 /**
- * @function setupModem
- * @description Set modem settings for serial communication
+ * Set modem settings for serial communication
+ * 
  * @returns {Promise<void>}
  */
 async function setupModem(): Promise<void> {
@@ -28,8 +28,8 @@ async function setupModem(): Promise<void> {
 }
 
 /**
- * @function setupGPS
- * @description Setup GPS data format and enable GPS
+ * Setup GPS data format and enable GPS
+ * 
  * @returns {Promise<void>}
  */
 async function setupGPS(): Promise<void> {
@@ -46,9 +46,9 @@ async function setupGPS(): Promise<void> {
 }
 
 /**
- * @function waitForConnection
- * @description Wait for modem connection
- * @returns {Promise<true>} true when the modem is connected
+ * Loop until modem establish a connection to the network
+ * 
+ * @returns {Promise<true>} True when the modem is connected
  */
 async function waitForConnection(): Promise<true> {
     const connectedResponse: string = await executeAT(`AT+CGATT?`);
@@ -60,8 +60,8 @@ async function waitForConnection(): Promise<true> {
 }
 
 /**
- * @function setup
- * @description Setup program environment
+ * Setup program environment
+ * 
  * @returns {Promise<void>}
  */
 export async function setup(): Promise<void> {
@@ -79,8 +79,8 @@ export async function setup(): Promise<void> {
 }
 
 /**
- * @function clearSetup
- * @description Clear program environment
+ * Clear program environment
+ * 
  * @returns {Promise<void>}
  */
 export async function clearSetup(): Promise<void> {

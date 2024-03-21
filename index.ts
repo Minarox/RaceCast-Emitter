@@ -49,8 +49,8 @@ setup()
     });
 
 /**
- * @function cleanUp
- * @description Cleanup and exit the script
+ * Cleanup the program before exit
+ * 
  * @returns {Promise<void>}
  */
 async function cleanUp(): Promise<void> {
@@ -60,7 +60,7 @@ async function cleanUp(): Promise<void> {
     cleanupCalled = true;
 
     // Clear environment
-    await clearSetup();
+    setTimeout(async () => await clearSetup(), 500);
 
     process.exit();
 }

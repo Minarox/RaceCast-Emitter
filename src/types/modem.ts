@@ -1,6 +1,6 @@
 /**
- * @name Type
- * @description Type of component of the modem
+ * Type of component of the modem
+ * 
  * @enum {string}
  */
 export enum Type {
@@ -10,8 +10,8 @@ export enum Type {
 }
 
 /**
- * @interface Network
- * @description Network data returned by the modem
+ * Network data returned by the modem
+ * 
  * @enum {string}
  */
 export interface Network {
@@ -21,8 +21,8 @@ export interface Network {
 }
 
 /**
- * @interface Signal
- * @description Signal data returned by the modem
+ * Signal data returned by the modem
+ * 
  * @enum {string}
  */
 export interface Signal {
@@ -31,8 +31,8 @@ export interface Signal {
 }
 
 /**
- * @interface GPS
- * @description GPS data returned by the modem
+ * GPS data returned by the modem
+ * 
  * @enum {string}
  */
 export interface GPS {
