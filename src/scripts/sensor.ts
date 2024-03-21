@@ -1,5 +1,7 @@
 import i2c, {I2CBus} from "i2c-bus";
 import Mpu6050 from "i2c-mpu6050";
+import {logMessage} from "../utils";
+import {LogLevel} from "../types/global";
 
 // Variables
 const address: number = 0x68;
@@ -10,7 +12,7 @@ let reverse: number;
 
 /**
  * Reduces all decimals found in the object
- * 
+ *
  * @param {any} data - Object containing floats
  * @returns {void}
  */
@@ -26,7 +28,7 @@ function limitDecimals(data: any): void {
 
 /**
  * Smoothes 25 lasts temperature values
- * 
+ *
  * @param {number} newTemp - Value to be added to the average
  * @returns {number} Average temperature
  */
@@ -42,10 +44,10 @@ function averageTemperature(newTemp: number): number {
 
 /**
  * Read datas from the sensor
- * 
+ *
  * @returns {Promise<void>}
  */
-export default async function getSensorDatas(): Promise<void> {
+async function getSensorDatas(): Promise<void> {
     const data: any = sensor.readSync();
     delete data.gyro.z;
 
@@ -73,7 +75,13 @@ export default async function getSensorDatas(): Promise<void> {
     data.accel.y = reverse;
 
     // Show data
-    process.stdout.write(JSON.stringify(data));
+    if (process.send) {
+        process.send({Sensor: data});
+    } else {
+        if (process.stdout.isTTY) {
+            logMessage(JSON.stringify({Sensor: data}), LogLevel.DATA);
+        }
+    }
 }
 
-setTimeout(getSensorDatas, 100);
+setInterval(getSensorDatas, 125);

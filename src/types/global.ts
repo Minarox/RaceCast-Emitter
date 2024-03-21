@@ -1,13 +1,14 @@
-import { ChildProcess } from 'child_process';
+import {ChildProcess} from 'child_process';
 
 /**
- * Type of log message
- * 
+ * Level of log message
+ *
  * @enum {string}
  */
-export enum LogType {
-    INFO = 'stdout',
-    ERROR = 'stderr'
+export enum LogLevel {
+    INFO = 'INFO',
+    ERROR = 'ERROR',
+    DATA = 'DATA'
 }
 
 /**

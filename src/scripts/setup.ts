@@ -1,9 +1,9 @@
 import {execute, executeAT, logMessage, wait} from "../utils";
-import {LogType} from "../types/global";
+import {LogLevel} from "../types/global";
 
 /**
  * Restart audio services of the system
- * 
+ *
  * @returns {Promise<void>}
  */
 async function setupAudio(): Promise<void> {
@@ -15,10 +15,10 @@ async function setupAudio(): Promise<void> {
 
 /**
  * Set modem settings for serial communication
- * 
+ *
  * @returns {Promise<void>}
  */
-export async function setupModem(): Promise<void> {
+async function setupModem(): Promise<void> {
     const echoResponse: string = await executeAT(`ATE0`);
     const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",0`);
 
@@ -29,10 +29,10 @@ export async function setupModem(): Promise<void> {
 
 /**
  * Setup GPS data format and enable GPS
- * 
+ *
  * @returns {Promise<void>}
  */
-export async function setupGPS(): Promise<void> {
+async function setupGPS(): Promise<void> {
     const gpsState: string = await executeAT(`AT+QGPS?`);
     if (gpsState.trim().startsWith("+QGPS: 0")) {
         // Set data format and enable GPS
@@ -47,7 +47,7 @@ export async function setupGPS(): Promise<void> {
 
 /**
  * Loop until modem establish a connection to the network
- * 
+ *
  * @returns {Promise<true>} True when the modem is connected
  */
 async function waitForConnection(): Promise<true> {
@@ -61,7 +61,7 @@ async function waitForConnection(): Promise<true> {
 
 /**
  * Setup program environment
- * 
+ *
  * @returns {Promise<void>}
  */
 export async function setup(): Promise<void> {
@@ -73,18 +73,18 @@ export async function setup(): Promise<void> {
         await setupGPS();
         await waitForConnection();
     } catch (error) {
-        logMessage(`Error setting up environment:\n${error}`, LogType.ERROR, true);
+        logMessage(`Error setting up environment:\n${error}`, LogLevel.ERROR);
         process.exit(1);
     }
 }
 
 /**
  * Clear program environment
- * 
+ *
  * @returns {Promise<void>}
  */
 export async function clearSetup(): Promise<void> {
-    logMessage(`Clear environment...`, LogType.INFO, true);
+    logMessage(`Clear environment...`);
     wait(800);
 
     try {
@@ -93,7 +93,7 @@ export async function clearSetup(): Promise<void> {
         // Search all network type
         await executeAT(`AT+QCFG="nwscanmode",0`);
     } catch (error) {
-        logMessage(`Error clearing environment:\n${error}`, LogType.ERROR, true);
+        logMessage(`Error clearing environment:\n${error}`, LogLevel.ERROR);
         process.exit(1);
     }
 }

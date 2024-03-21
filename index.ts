@@ -1,15 +1,15 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
 import {logMessage} from "./src/utils";
-import {LogType, Processes} from "./src/types/global";
-import { fork } from 'child_process';
+import {LogLevel, Processes} from "./src/types/global";
+import {fork} from 'child_process';
 
 // Load environment variables from .env file
 dotenv.config();
 
 // Check if the script is running as root
 if (!!(process.getuid && process.getuid() === 0) || !!(process.env['SUDO_UID'])) {
-    logMessage(`This script must not be run as root. Exiting...`, LogType.ERROR, true);
+    logMessage(`This script must not be run as root. Exiting...`, LogLevel.ERROR);
     process.exit(1);
 }
 
@@ -18,28 +18,25 @@ let cleanupCalled: boolean = false;
 const processes: Processes = {
     modem: null,
     sensor: null
-}
+};
 
 /**
  * Launch and listen to sensor script
- * 
+ *
  * @returns {void}
  */
+
 function launchModem(): void {
     // Run the script
-    if (process.env['NODE_ENV'] !== "production") {
-        processes.modem = fork("npx", ["ts-node", "src/scripts/modem.ts"], { stdio: "pipe" });
-    } else {
-        processes.modem = fork("node", ["src/scripts/modem.js"], { stdio: "pipe" });
-    }
+    processes.modem = fork(`${__dirname}/src/scripts/modem.${process.env['NODE_ENV'] === 'production' ? 'js' : 'ts'}`);
 
     // Fetch data
-    processes.modem.on('message', (data) => {
-        console.log(data);
+    processes.modem.on('message', (data): void => {
+        logMessage(JSON.stringify(data), LogLevel.DATA);
     });
 
     // Restart if exit
-    processes.modem.on('exit', () => {
+    processes.modem.on('exit', (): void => {
         processes.sensor = null;
 
         if (!cleanupCalled) {
@@ -50,24 +47,20 @@ function launchModem(): void {
 
 /**
  * Launch and listen to sensor script
- * 
+ *
  * @returns {void}
  */
 function launchSensor(): void {
     // Run the script
-    if (process.env['NODE_ENV'] !== "production") {
-        processes.sensor = fork("npx", ["ts-node", "src/scripts/sensor.ts"], { stdio: "pipe" });
-    } else {
-        processes.sensor = fork("node", ["src/scripts/sensor.js"], { stdio: "pipe" });
-    }
+    processes.sensor = fork(`${__dirname}/src/scripts/sensor.${process.env['NODE_ENV'] === 'production' ? 'js' : 'ts'}`);
 
     // Fetch data
-    processes.sensor.on('message', (data) => {
-        console.log(data);
+    processes.sensor.on('message', (data): void => {
+        logMessage(JSON.stringify(data), LogLevel.DATA);
     });
 
     // Restart if exit
-    processes.sensor.on('exit', () => {
+    processes.sensor.on('exit', (): void => {
         processes.sensor = null;
 
         if (!cleanupCalled) {
@@ -89,7 +82,7 @@ setup()
 
 /**
  * Cleanup the program before exit
- * 
+ *
  * @returns {Promise<void>}
  */
 async function cleanUp(): Promise<void> {
