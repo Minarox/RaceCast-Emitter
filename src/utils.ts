@@ -41,3 +41,18 @@ export function execute(command: string): Promise<string> {
 export function executeAT(command: string): Promise<string> {
     return execute(`echo '${command}' | socat - /dev/ttyUSB2,crnl`);
 }
+
+/**
+ * Wait a certain amount of time
+ * 
+ * @params {number} ms - Time to wait in milisecond
+ * @returns {void}
+ */
+export function wait(ms: number): void {
+    const start: number = Date.now();
+    let now: number = start;
+    
+    while (now - start < ms) {
+      now = Date.now();
+    }
+}

@@ -60,7 +60,7 @@ async function cleanUp(): Promise<void> {
     cleanupCalled = true;
 
     // Clear environment
-    setTimeout(async () => await clearSetup(), 500);
+    await clearSetup();
 
     process.exit();
 }

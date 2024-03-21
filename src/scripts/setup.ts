@@ -1,4 +1,4 @@
-import {execute, executeAT, logMessage} from "../utils";
+import {execute, executeAT, logMessage, wait} from "../utils";
 import {LogType} from "../types/log";
 
 /**
@@ -85,6 +85,7 @@ export async function setup(): Promise<void> {
  */
 export async function clearSetup(): Promise<void> {
     logMessage(`Clear environment...`, LogType.INFO, true);
+    wait(800);
 
     try {
         await executeAT(`AT+QGPSEND`);
