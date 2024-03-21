@@ -43,9 +43,9 @@ function averageTemperature(newTemp: number): number {
 /**
  * Read datas from the sensor
  * 
- * @returns {void}
+ * @returns {Promise<void>}
  */
-export default function getSensorDatas(): void {
+export default async function getSensorDatas(): Promise<void> {
     const data: any = sensor.readSync();
     delete data.gyro.z;
 
