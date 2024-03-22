@@ -7,6 +7,7 @@ import {ChildProcess} from 'child_process';
  */
 export enum LogLevel {
     INFO = 'INFO',
+    WARNING = 'WARNING',
     ERROR = 'ERROR',
     DATA = 'DATA'
 }

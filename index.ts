@@ -14,6 +14,7 @@ if (!!(process.getuid && process.getuid() === 0) || !!(process.env['SUDO_UID']))
 }
 
 // Variables
+const fileType: string = process.env['NODE_ENV'] === 'production' ? 'js' : 'ts'
 let cleanupCalled: boolean = false;
 const processes: Processes = {
     modem: null,
@@ -25,10 +26,9 @@ const processes: Processes = {
  *
  * @returns {void}
  */
-
 function launchModem(): void {
-    // Run the script
-    processes.modem = fork(`${__dirname}/src/scripts/modem.${process.env['NODE_ENV'] === 'production' ? 'js' : 'ts'}`);
+    logMessage(`Launching Modem script...`, LogLevel.INFO);
+    processes.modem = fork(`${__dirname}/src/scripts/modem.${fileType}`);
 
     // Fetch data
     processes.modem.on('message', (data): void => {
@@ -36,8 +36,9 @@ function launchModem(): void {
     });
 
     // Restart if exit
-    processes.modem.on('exit', (): void => {
-        processes.sensor = null;
+    processes.modem.on('exit', (reason: string): void => {
+        logMessage(`Modem script exiting :\n${reason}`, LogLevel.WARNING);
+        processes.modem = null;
 
         if (!cleanupCalled) {
             setTimeout(launchSensor, 1000);
@@ -51,8 +52,8 @@ function launchModem(): void {
  * @returns {void}
  */
 function launchSensor(): void {
-    // Run the script
-    processes.sensor = fork(`${__dirname}/src/scripts/sensor.${process.env['NODE_ENV'] === 'production' ? 'js' : 'ts'}`);
+    logMessage(`Launching Sensor script...`, LogLevel.INFO);
+    processes.sensor = fork(`${__dirname}/src/scripts/sensor.${fileType}`);
 
     // Fetch data
     processes.sensor.on('message', (data): void => {
@@ -60,7 +61,8 @@ function launchSensor(): void {
     });
 
     // Restart if exit
-    processes.sensor.on('exit', (): void => {
+    processes.sensor.on('exit', (reason: string): void => {
+        logMessage(`Sensor script exiting :\n${reason}`, LogLevel.WARNING);
         processes.sensor = null;
 
         if (!cleanupCalled) {
@@ -72,12 +74,10 @@ function launchSensor(): void {
 // Setup environment and run scripts
 setup()
     .then(async (): Promise<void> => {
-        logMessage(`Launching scripts...`);
+        logMessage(`Starting main program...`);
 
         launchModem();
         launchSensor();
-
-        console.log('Hello World!');
     });
 
 /**
