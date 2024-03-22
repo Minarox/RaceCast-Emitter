@@ -6,7 +6,7 @@ import {LogLevel} from "../types/global";
 let data_count: number = 0;
 
 /**
- * Send data to the parent process
+ * Show / Send data to the parent process
  *
  * @param {any} data - Data to send
  * @returns {void}

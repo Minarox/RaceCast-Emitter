@@ -2,6 +2,7 @@ import i2c, {I2CBus} from "i2c-bus";
 import Mpu6050 from "i2c-mpu6050";
 import {logMessage} from "../utils";
 import {LogLevel} from "../types/global";
+import {Sensor} from "../types/sensor";
 
 // Variables
 const address: number = 0x68;
@@ -48,33 +49,27 @@ function averageTemperature(newTemp: number): number {
  * @returns {Promise<void>}
  */
 async function getSensorDatas(): Promise<void> {
-    const data: any = sensor.readSync();
-    delete data.gyro.z;
+    const data: Sensor = sensor.readSync();
+
+    // Remove unused values
+    delete data.gyro;
+    delete data.rotation;
 
     // Offset calibration
     data.accel.x -= 0.058978759765625;
     data.accel.y -= 0.0088987060546875;
     data.accel.z -= 0.059643090820312494;
-    data.gyro.x -= -0.7022061068702323;
-    data.gyro.y -= 1.0760305343511471;
-    data.rotation.x -= -0.4804232806148877;
-    data.rotation.y -= -3.1856752923673435;
 
     // Transform data
     limitDecimals(data);
     data.temp = averageTemperature(data.temp);
-
-    // Invert gyro x and y
-    reverse = data.gyro.x * -1;
-    data.gyro.x = data.gyro.y;
-    data.gyro.y = reverse;
 
     // Invert accel y and z
     reverse = data.accel.z * -1;
     data.accel.z = data.accel.y;
     data.accel.y = reverse;
 
-    // Show data
+    // Show / Send data
     if (process.send) {
         process.send({Sensor: data});
     } else {
