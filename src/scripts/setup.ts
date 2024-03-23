@@ -71,6 +71,8 @@ export async function setup(): Promise<void> {
         await setupAudio();
         await setupModem();
         await setupGPS();
+
+        logMessage(`Wait internet connection...`);
         await waitForConnection();
     } catch (error) {
         logMessage(`Error setting up environment:\n${error}`, LogLevel.ERROR);
