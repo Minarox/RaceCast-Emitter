@@ -1,7 +1,9 @@
+// @ts-nocheck
 import puppeteer from 'puppeteer-core';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import {fileURLToPath} from 'url';
+import {getToken} from './livekit';
 
 // Variables
 let datas: any = {};
@@ -11,8 +13,8 @@ let connected: boolean = false;
 
 /**
  * Setter to change connected variable value
- * 
- * @param {boolean} value - New value 
+ *
+ * @param {boolean} value - New value
  * @returns {void}
  */
 function setConnected(value: boolean): void {
@@ -21,7 +23,7 @@ function setConnected(value: boolean): void {
 
 /**
  * Getter to fetch connected variable value
- * 
+ *
  * @returns {boolean} Value of the variable
  */
 function getConnected(): boolean {
@@ -30,8 +32,8 @@ function getConnected(): boolean {
 
 /**
  * Value of the environnement variable
- * 
- * @param name 
+ *
+ * @param name
  * @returns {string | undefined} Value of the variable
  */
 function getEnvVariable(name: string): string | undefined {
@@ -40,8 +42,8 @@ function getEnvVariable(name: string): string | undefined {
 
 /**
  * Launch headless browser
- * 
- * @returns {Promise<any>} Instance of the browser 
+ *
+ * @returns {Promise<any>} Instance of the browser
  */
 export async function getBrowser(): Promise<any> {
     if (browser) {
@@ -73,7 +75,7 @@ export async function getBrowser(): Promise<any> {
 
 /**
  * Open a new page
- * 
+ *
  * @returns {Promise<any>} Instance of the page
  */
 async function getPage(): Promise<any> {
@@ -91,12 +93,12 @@ async function getPage(): Promise<any> {
 
 /**
  * Launch stream
- * 
+ *
  * @returns {Promise<void>}
  */
 export async function launchLiveKit(): Promise<void> {
     const page = await getPage();
-    await page.goto('https://live.minarox.fr', { waitUntil: 'load' });
+    await page.goto('https://live.minarox.fr', {waitUntil: 'load'});
 
     page.on('console', async (msg) => {
         if (process.stdout.isTTY) {
@@ -117,9 +119,8 @@ export async function launchLiveKit(): Promise<void> {
     await page.exposeFunction('getEnvVariable', name => getEnvVariable(name));
     await page.exposeFunction('setConnected', value => setConnected(value));
     await page.exposeFunction('getConnected', getConnected);
-    await page.exposeFunction('saveDatas', saveDatas)
     const script = fs.readFileSync(`${path.dirname(fileURLToPath(import.meta.url))}/lib/livekit-client.min.js`, 'utf8');
-    await page.addScriptTag({ content: script });
+    await page.addScriptTag({content: script});
 
     await page.evaluate(async () => {
         window.setConnected(false);
@@ -127,8 +128,8 @@ export async function launchLiveKit(): Promise<void> {
         async function startSession() {
             window.setConnected(false);
             let token = await window.getToken();
-            let data_buffer = false;
-            let track_buffer = false;
+            let dataBuffer = false;
+            let trackBuffer = false;
             let interval = null;
 
             let room = new LivekitClient.Room({
@@ -139,14 +140,16 @@ export async function launchLiveKit(): Promise<void> {
             await room.prepareConnection(await window.getEnvVariable('API_WS_URL'), token);
 
             async function dataEvent(event) {
-                if (data_buffer || !window.getConnected() || !room) return;
-                data_buffer = true;
+                if (dataBuffer || !window.getConnected() || !room) {
+                    return;
+                }
+                dataBuffer = true;
 
                 await room.localParticipant.publishData(
                     new TextEncoder().encode(JSON.stringify(event.detail.data)),
                     event.detail.lossy ? LivekitClient.DataPacket_Kind.LOSSY : LivekitClient.DataPacket_Kind.RELIABLE
                 );
-                data_buffer = false;
+                dataBuffer = false;
             }
 
             room
@@ -179,8 +182,8 @@ export async function launchLiveKit(): Promise<void> {
 
                     room = null;
                     token = null;
-                    data_buffer = false;
-                    track_buffer = false;
+                    dataBuffer = false;
+                    trackBuffer = false;
                     interval = null;
 
                     setTimeout(startSession);
@@ -194,23 +197,27 @@ export async function launchLiveKit(): Promise<void> {
             await updateTracks(room);
 
             async function updateTracks(room) {
-                if (track_buffer) return;
-                track_buffer = true;
+                if (trackBuffer) {
+                    return;
+                }
+                trackBuffer = true;
 
-                const video_input_devices = await LivekitClient.Room.getLocalDevices("videoinput");
-                const audio_input_devices = await LivekitClient.Room.getLocalDevices("audioinput");
+                const videoInputDevices = await LivekitClient.Room.getLocalDevices("videoinput");
+                const audioInputDevices = await LivekitClient.Room.getLocalDevices("audioinput");
 
-                const video_published_track = room.localParticipant.getTrackPublicationByName("main-video");
-                const audio_published_track = room.localParticipant.getTrackPublicationByName("main-audio");
+                const videoPublishedTrack = room.localParticipant.getTrackPublicationByName("main-video");
+                const audioPublishedTrack = room.localParticipant.getTrackPublicationByName("main-audio");
 
-                if (video_input_devices.length) {
-                    if (video_published_track) {
-                        await room.switchActiveDevice("videoinput", video_input_devices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || video_input_devices[0].deviceId);
-                        if (video_published_track.isMuted) video_published_track.unmute();
+                if (videoInputDevices.length) {
+                    if (videoPublishedTrack) {
+                        await room.switchActiveDevice("videoinput", videoInputDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || videoInputDevices[0].deviceId);
+                        if (videoPublishedTrack.isMuted) {
+                            videoPublishedTrack.unmute();
+                        }
                     } else {
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalVideoTrack({
-                                deviceId: video_input_devices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || video_input_devices[0].deviceId,
+                                deviceId: videoInputDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || videoInputDevices[0].deviceId,
                                 resolution: LivekitClient.VideoPresets.h360
                             }),
                             {
@@ -227,18 +234,20 @@ export async function launchLiveKit(): Promise<void> {
                             }
                         );
                     }
-                } else if (video_published_track) {
-                    await room.localParticipant.unpublishTrack(video_published_track.trackID, true);
+                } else if (videoPublishedTrack) {
+                    await room.localParticipant.unpublishTrack(videoPublishedTrack.trackID, true);
                 }
 
-                if (audio_input_devices.length) {
-                    if (audio_published_track) {
-                        await room.switchActiveDevice("audioinput", audio_input_devices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || audio_input_devices[0].deviceId);
-                        if (audio_published_track.isMuted) audio_published_track.unmute();
+                if (audioInputDevices.length) {
+                    if (audioPublishedTrack) {
+                        await room.switchActiveDevice("audioinput", audioInputDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || audioInputDevices[0].deviceId);
+                        if (audioPublishedTrack.isMuted) {
+                            audioPublishedTrack.unmute();
+                        }
                     } else {
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalAudioTrack({
-                                deviceId: audio_input_devices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || audio_input_devices[0].deviceId,
+                                deviceId: audioInputDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || audioInputDevices[0].deviceId,
                                 autoGainControl: false,
                                 echoCancellation: false,
                                 noiseSuppression: false,
@@ -258,18 +267,22 @@ export async function launchLiveKit(): Promise<void> {
                             }
                         );
                     }
-                } else if (audio_published_track) {
-                    await room.localParticipant.unpublishTrack(audio_published_track.trackID, true);
+                } else if (audioPublishedTrack) {
+                    await room.localParticipant.unpublishTrack(audioPublishedTrack.trackID, true);
                 }
 
-                track_buffer = false;
+                trackBuffer = false;
             }
 
             function sendToRoom() {
-                if (window.getConnected() || room) window.saveDatas();
+                if (window.getConnected() || room) {
+                    window.saveDatas();
+                }
 
                 interval = setInterval(() => {
-                    if (window.getConnected() || room) window.saveDatas();
+                    if (window.getConnected() || room) {
+                        window.saveDatas();
+                    }
                 }, 5000)
             }
         }
@@ -282,8 +295,8 @@ export async function launchLiveKit(): Promise<void> {
 // Send data to LiveKit room
 /**
  * Send data to the room
- * 
- * @param {any} data - Data to send 
+ *
+ * @param {any} data - Data to send
  * @param {boolean} lossy - Request type
  * @returns {void}
  */
@@ -291,11 +304,11 @@ export function sendData(data: any, lossy: boolean = true): void {
     datas = {
         ...datas,
         ...data
-    }
+    };
 
     if (connected && browser && page) {
-        page.evaluate((data, lossy) => {
-            const customEvent = new CustomEvent(
+        page.evaluate((data, lossy): void => {
+            const customEvent: CustomEvent = new CustomEvent(
                 'data',
                 {
                     detail: {
