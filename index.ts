@@ -14,7 +14,7 @@ if (!!(process.getuid && process.getuid() === 0) || !!(process.env['SUDO_UID']))
 }
 
 // Variables
-const fileType: string = process.env['NODE_ENV'] === 'production' ? 'js' : 'ts'
+const fileType: string = process.env['NODE_ENV'] === 'production' ? 'js' : 'ts';
 let cleanupCalled: boolean = false;
 const processes: Processes = {
     modem: null,
@@ -37,7 +37,7 @@ function launchModem(): void {
 
     // Restart if exit
     processes.modem.on('exit', (reason: string): void => {
-        logMessage(`Modem script exiting :\n${reason}`, LogLevel.WARNING);
+        logMessage(`Modem script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.modem = null;
 
         if (!cleanupCalled) {
@@ -62,7 +62,7 @@ function launchSensor(): void {
 
     // Restart if exit
     processes.sensor.on('exit', (reason: string): void => {
-        logMessage(`Sensor script exiting :\n${reason}`, LogLevel.WARNING);
+        logMessage(`Sensor script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.sensor = null;
 
         if (!cleanupCalled) {
