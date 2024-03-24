@@ -18,7 +18,8 @@ const fileType: string = process.env['NODE_ENV'] === 'production' ? 'js' : 'ts';
 let cleanupCalled: boolean = false;
 const processes: Processes = {
     modem: null,
-    sensor: null
+    sensor: null,
+    stream: null
 };
 
 /**
@@ -31,7 +32,7 @@ function launchModem(): void {
     processes.modem = fork(`${__dirname}/src/scripts/modem.${fileType}`);
 
     // Fetch data
-    processes.modem.on('message', (data): void => {
+    processes.modem.on('message', (data: any): void => {
         logMessage(JSON.stringify(data), LogLevel.DATA);
     });
 
@@ -56,7 +57,7 @@ function launchSensor(): void {
     processes.sensor = fork(`${__dirname}/src/scripts/sensor.${fileType}`);
 
     // Fetch data
-    processes.sensor.on('message', (data): void => {
+    processes.sensor.on('message', (data: any): void => {
         logMessage(JSON.stringify(data), LogLevel.DATA);
     });
 
@@ -71,6 +72,31 @@ function launchSensor(): void {
     });
 }
 
+/**
+ * Launch and listen to stream script
+ *
+ * @returns {void}
+ */
+function launchStream(): void {
+    logMessage(`Launching Stream script...`, LogLevel.INFO);
+    processes.stream = fork(`${__dirname}/src/scripts/stream.${fileType}`);
+
+    // Fetch data
+    processes.stream.on('message', (data: any): void => {
+        logMessage(JSON.stringify(data), LogLevel.DATA);
+    });
+
+    // Restart if exit
+    processes.stream.on('exit', (reason: string): void => {
+        logMessage(`Stream script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
+        processes.stream = null;
+
+        if (!cleanupCalled) {
+            setTimeout(launchStream, 1000);
+        }
+    });
+}
+
 // Setup environment and run scripts
 setup()
     .then(async (): Promise<void> => {
@@ -78,6 +104,7 @@ setup()
 
         launchModem();
         launchSensor();
+        launchStream();
     });
 
 /**

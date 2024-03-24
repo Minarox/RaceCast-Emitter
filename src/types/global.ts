@@ -18,4 +18,5 @@ export enum LogLevel {
 export interface Processes {
     modem: ChildProcess | null;
     sensor: ChildProcess | null;
+    stream: ChildProcess | null;
 }
