@@ -1,13 +1,9 @@
 // @ts-nocheck
 import puppeteer from 'puppeteer-core';
 import fs from 'fs';
-import path from 'path';
-import {fileURLToPath} from 'url';
-import {getToken} from './livekit';
 import {logMessage} from '../utils';
 import {LogLevel} from '../types/global';
-import { trackSlotScopes } from '@vue/compiler-core';
-import { create } from 'domain';
+import {getToken} from "./livekit";
 
 // Variables
 let browser: any = null;
@@ -27,6 +23,7 @@ function getEnvVariable(name: string): string | undefined {
  * Show / Send data to the parent process
  *
  * @param {string} message - Message to send
+ * @param {LogLevel} type - Type of message
  * @returns {void}
  */
 function reportMessage(message: string, type: LogLevel = LogLevel.INFO): void {
@@ -51,7 +48,8 @@ export function sendData(data: any): void {
             const customEvent: CustomEvent = new CustomEvent(
                 'data',
                 {
-                    detail: { data: data }});
+                    detail: {data: data}
+                });
             window.dispatchEvent(customEvent);
         }, data);
     }
@@ -113,7 +111,7 @@ async function getPage(): Promise<any> {
  *
  * @returns {Promise<void>}
  */
-export async function launchLiveKit(): Promise<void> {
+export async function startStream(): Promise<void> {
     const page = await getPage();
     await page.goto('https://live.minarox.fr', {waitUntil: 'load'});
 
@@ -130,7 +128,7 @@ export async function launchLiveKit(): Promise<void> {
 
     await page.exposeFunction('getToken', getToken);
     await page.exposeFunction('getEnvVariable', (name: string): string | undefined => getEnvVariable(name));
-    const script = fs.readFileSync(`${path.dirname(fileURLToPath(import.meta.url))}/lib/livekit-client.min.js`, 'utf8');
+    const script: string = fs.readFileSync(`${__dirname}/../libs/livekit-client.min.js`, 'utf8');
     await page.addScriptTag({content: script});
 
     await page.evaluate(async () => {
@@ -146,7 +144,7 @@ export async function launchLiveKit(): Promise<void> {
             const devices = await navigator.mediaDevices.enumerateDevices();
 
             if (!tracks.audio) {
-                const deviceId = audioDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || null
+                const deviceId = audioDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || null;
                 if (deviceId) {
                     tracks.audio = await LivekitClient.createLocalAudioTrack({
                         deviceId: deviceId,
@@ -159,7 +157,7 @@ export async function launchLiveKit(): Promise<void> {
             }
 
             if (!tracks.video) {
-                const deviceId = videoDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || null
+                const deviceId = videoDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || null;
                 if (deviceId) {
                     tracks.video = await LivekitClient.createLocalVideoTrack({
                         deviceId: deviceId,
@@ -253,4 +251,4 @@ export async function launchLiveKit(): Promise<void> {
     });
 }
 
-launchLiveKit();
+setTimeout(startStream);

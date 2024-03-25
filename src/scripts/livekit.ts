@@ -1,4 +1,4 @@
-import {AccessToken, RoomServiceClient} from "livekit-server-sdk";
+import {dynamicImport} from "tsimportlib";
 
 // Variables
 let token: string;
@@ -7,15 +7,16 @@ let tokenCreatedAt: number;
 /**
  * Generate a token for LiveKit (valid for 6 hours)
  *
- * @returns {Promise<string>}
+ * @returns {Promise<string>} Token
  */
-export async function getToken() {
+export async function getToken(): Promise<string> {
     if (token && tokenCreatedAt && (Date.now() - tokenCreatedAt) < 60 * 60 * 6 * 1000) {
         return token;
     }
 
     // Generate a new token
-    const accessToken: AccessToken = new AccessToken(
+    const liveKitSDK: any = await dynamicImport('livekit-server-sdk', module) as typeof import('livekit-server-sdk');
+    const accessToken: any = new liveKitSDK.AccessToken(
         process.env['API_KEY'],
         process.env['API_SECRET'],
         {
@@ -55,13 +56,14 @@ export async function getToken() {
  * @returns {Promise<void>}
  */
 export async function setRoomMetadata(data: any): Promise<void> {
-    const RoomService: RoomServiceClient = new RoomServiceClient(
+    const liveKitSDK: any = await dynamicImport('livekit-server-sdk', module) as typeof import('livekit-server-sdk');
+    const roomService: any = new liveKitSDK.RoomServiceClient(
         process.env['API_URL'] || '',
         process.env['API_KEY'],
         process.env['API_SECRET']
     );
 
-    await RoomService.updateRoomMetadata(
+    await roomService.updateRoomMetadata(
         process.env['API_ROOM'] || '',
         JSON.stringify({
             ...data,
