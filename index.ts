@@ -41,9 +41,11 @@ function launchModem(): void {
         logMessage(`Modem script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.modem = null;
 
-        if (!cleanupCalled) {
-            setTimeout(launchSensor, 1000);
-        }
+        setTimeout(() => {
+            if (!cleanupCalled) {
+                launchModem();
+            }
+        }, 1000);
     });
 }
 
@@ -66,9 +68,11 @@ function launchSensor(): void {
         logMessage(`Sensor script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.sensor = null;
 
-        if (!cleanupCalled) {
-            setTimeout(launchSensor, 1000);
-        }
+        setTimeout(() => {
+            if (!cleanupCalled) {
+                launchSensor();
+            }
+        }, 1000);
     });
 }
 
@@ -91,9 +95,11 @@ function launchStream(): void {
         logMessage(`Stream script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.stream = null;
 
-        if (!cleanupCalled) {
-            setTimeout(launchStream, 1000);
-        }
+        setTimeout(() => {
+            if (!cleanupCalled) {
+                launchStream();
+            }
+        }, 1000);
     });
 }
 
