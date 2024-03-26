@@ -21,7 +21,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "ts-node index.ts",
-    "build": "npx tsc; cp -r src/libs dist/src/libs",
+    "build": "npx tsc; cp -r src/libs dist/src/libs; cp .env dist/.env",
     "start": "NODE_ENV=production node dist/index.js"
   },
   "dependencies": {

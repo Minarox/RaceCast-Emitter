@@ -132,9 +132,9 @@ export async function startStream(): Promise<void> {
     await page.addScriptTag({content: script});
 
     await page.evaluate(async () => {
-        connected = false;
-        buffering = false;
-        tracks = {
+        let connected = false;
+        let buffering = false;
+        const tracks = {
             audio: null,
             video: null
         };
@@ -142,6 +142,8 @@ export async function startStream(): Promise<void> {
         // Create local video and audio tracks
         async function createTracks() {
             const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioDevices = devices.filter(device => device.kind === "audioinput");
+            const videoDevices = devices.filter(device => device.kind === "videoinput");
 
             if (!tracks.audio) {
                 const deviceId = audioDevices.filter(device => device.label.startsWith("Cam Link 4K"))[0]?.deviceId || null;
