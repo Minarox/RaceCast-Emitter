@@ -1,25 +1,13 @@
 {
   "name": "racecast-emitter",
   "version": "1.0.0",
-  "description": "Onboard IoT project to capture and transmit data from the race car to the receiver.",
-  "main": "main.js",
-  "type": "module",
+  "description": "Onboard autonomous IoT project to capture and transmit data and media stream from the race car.",
   "author": {
     "name": "Mathis Serrieres Maniecki",
     "email": "contact@minarox.fr",
     "url": "https://minarox.fr/"
   },
   "license": "GPL-3.0-only",
-  "scripts": {
-    "start": "node main.js"
-  },
-  "dependencies": {
-    "dotenv": "^16.4.5",
-    "i2c-bus": "^5.2.3",
-    "i2c-mpu6050": "^2.3.0",
-    "livekit-server-sdk": "^2.1.2",
-    "puppeteer-core": "^22.6.1"
-  },
   "bugs": {
     "url": "https://github.com/RaceCast/Emitter/issues",
     "email": "contact@minarox.fr"
@@ -29,5 +17,25 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/RaceCast/Emitter.git"
+  },
+  "main": "index.js",
+  "scripts": {
+    "dev": "ts-node index.ts",
+    "build": "npx tsc; cp -r src/libs dist/src/libs; cp .env dist/.env",
+    "start": "NODE_ENV=production node dist/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "i2c-bus": "^5.2.3",
+    "i2c-mpu6050": "^2.3.0",
+    "livekit-server-sdk": "^2.1.2",
+    "puppeteer-core": "^22.6.1"
+  },
+  "devDependencies": {
+    "@types/i2c-bus": "^5.1.2",
+    "@types/node": "^20.11.30",
+    "ts-node": "^10.9.2",
+    "tsimportlib": "^0.0.5",
+    "typescript": "^5.4.3"
   }
 }

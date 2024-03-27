@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    // Language and Environment
+    "target": "ES2022",
+    "module": "commonjs",
+    "outDir": "dist",
+    "esModuleInterop": true,
+    "removeComments": true,
+    "noEmitHelpers": false,
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    // Some stricter flags
+    "forceConsistentCasingInFileNames": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    "allowUnusedLabels": false,
+    "allowUnreachableCode": false,
+    "strictFunctionTypes": true
+  },
+  "include": [
+    "index.ts",
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}
