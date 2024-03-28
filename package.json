@@ -36,6 +36,7 @@
     "@types/node": "^20.11.30",
     "ts-node": "^10.9.2",
     "tsimportlib": "^0.0.5",
-    "typescript": "^5.4.3"
+    "typescript": "^5.4.3",
+    "node-gyp": "^10.1.0"
   }
 }
