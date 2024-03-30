@@ -8,7 +8,7 @@ import {LogLevel} from "../types/global";
  */
 async function setupModem(): Promise<void> {
     await executeAT(`ATE0`).catch();
-    const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",0`);
+    const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",3`);
 
     if (scanModeResponse.trim() !== 'OK') {
         throw new Error(`Unable to set modem settings`);
@@ -80,7 +80,7 @@ export async function clearSetup(): Promise<void> {
         // Disable GPS
         await executeAT(`AT+QGPSEND`);
         // Search all network type
-        await executeAT(`AT+QCFG="nwscanmode",0`);
+        // await executeAT(`AT+QCFG="nwscanmode",0`);
     } catch (error) {
         logMessage(`Error clearing environment:\n${error}`, LogLevel.ERROR);
         process.exit(1);
