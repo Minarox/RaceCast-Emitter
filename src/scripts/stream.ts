@@ -8,6 +8,26 @@ import {getToken} from "./livekit";
 // Variables
 let browser: any = null;
 let page: any = null;
+let connected: boolean = false;
+
+/**
+ * Setter to change connected variable value
+ *
+ * @param {boolean} value - New value
+ * @returns {void}
+ */
+function setConnected(value: boolean): void {
+    connected = value;
+}
+
+/**
+ * Getter to fetch connected variable value
+ *
+ * @returns {boolean} Value of the variable
+ */
+function getConnected(): boolean {
+    return connected;
+}
 
 /**
  * Value of the environnement variable
@@ -31,25 +51,6 @@ function reportMessage(message: string, type: LogLevel = LogLevel.INFO): void {
         process.send(message);
     } else {
         logMessage(message, type);
-    }
-}
-
-/**
- * Send data to the room
- *
- * @param {any} data - Data to send
- * @returns {void}
- */
-export function sendData(data: any): void {
-    if (connected && browser && page) {
-        page.evaluate((data): void => {
-            const customEvent: CustomEvent = new CustomEvent(
-                'data',
-                {
-                    detail: {data: data}
-                });
-            window.dispatchEvent(customEvent);
-        }, data);
     }
 }
 
@@ -125,13 +126,15 @@ export async function startStream(): Promise<void> {
     });
 
     await page.exposeFunction('getToken', getToken);
+    await page.exposeFunction('setConnected', value => setConnected(value));
+    await page.exposeFunction('getConnected', getConnected);
     await page.exposeFunction('getEnvVariable', (name: string): string | undefined => getEnvVariable(name));
     const script: string = fs.readFileSync(`${__dirname}/../libs/livekit-client.min.js`, 'utf8');
     await page.addScriptTag({content: script});
 
-    await page.evaluate(async () => {
-        let connected = false;
-        let buffering = false;
+    await page.evaluate(async (): Promise<void> => {
+        window.setConnected(false);
+        let dataListener = false;
         const tracks = {
             audio: null,
             video: null
@@ -148,7 +151,7 @@ export async function startStream(): Promise<void> {
                 if (deviceId) {
                     tracks.audio = await LivekitClient.createLocalAudioTrack({
                         deviceId: deviceId,
-                        autoGainControl: true,
+                        autoGainControl: false,
                         echoCancellation: false,
                         noiseSuppression: false,
                         channelCount: 2
@@ -175,6 +178,7 @@ export async function startStream(): Promise<void> {
 
         // Connect to LiveKit room and publish tracks with datas
         async function startSession() {
+            window.setConnected(false);
             let token = await window.getToken();
 
             let room = new LivekitClient.Room({
@@ -190,39 +194,23 @@ export async function startStream(): Promise<void> {
 
             // Send data to room
             async function dataEvent(event) {
-                if (!connected || !buffering || !room) {
+                if (!window.getConnected() || !room) {
                     return;
                 }
-                buffering = true;
 
                 await room.localParticipant.publishData(
                     new TextEncoder().encode(JSON.stringify(event.detail.data)),
                     LivekitClient.DataPacket_Kind.LOSSY
                 );
-
-                buffering = false;
             }
 
             await room.prepareConnection(await window.getEnvVariable('API_WS_URL'), token);
 
             room
-                .on(LivekitClient.RoomEvent.ConnectionQualityChanged, (value) => console.log('ConnectionQualityChanged:', value))
-                .on(LivekitClient.RoomEvent.Connected, async function () {
-                    console.log('Connected');
-                    connected = true;
-                })
-                .on(LivekitClient.RoomEvent.Reconnecting, async function () {
-                    console.log('Reconnecting');
-                    connected = false;
-                })
-                .on(LivekitClient.RoomEvent.Reconnected, async function () {
-                    console.log('Reconnected');
-                    connected = true;
-                })
-                .on(LivekitClient.RoomEvent.Disconnected, async function () {
-                    console.log('Disconnected');
-                    connected = false;
-                });
+                .on(LivekitClient.RoomEvent.Connected, () => window.setConnected(true))
+                .on(LivekitClient.RoomEvent.Reconnecting, () => window.setConnected(false))
+                .on(LivekitClient.RoomEvent.Reconnected, () => window.setConnected(true))
+                .on(LivekitClient.RoomEvent.Disconnected, () => window.setConnected(false));
 
             await room.connect(await window.getEnvVariable('API_WS_URL'), token);
 
@@ -252,11 +240,30 @@ export async function startStream(): Promise<void> {
                 }
             });
 
-            window.addEventListener('data', dataEvent);
+            if (!dataListener) {
+                dataListener = true;
+                window.addEventListener('data', dataEvent);
+            }
         }
 
         setTimeout(createTracks);
     });
 }
+
+// Send data to the room
+process.on('message', (data: any): void => {
+    if (browser && page && connected) {
+        page.evaluate((data: any): void => {
+            const customEvent: CustomEvent = new CustomEvent(
+                'data',
+                {
+                    detail: {
+                        data: data
+                    }
+                });
+            window.dispatchEvent(customEvent);
+        }, data);
+    }
+});
 
 setTimeout(startStream);

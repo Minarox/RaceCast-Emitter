@@ -26,12 +26,12 @@ function launchModem(): void {
     processes.modem = fork(`${__dirname}/src/scripts/modem.${fileType}`);
 
     // Fetch data
-    processes.modem.on('message', (data: any): void => {
-        logMessage(JSON.stringify(data), LogLevel.DATA);
+    processes.modem?.on('message', (data: any): void => {
+        processes.stream?.send(data);
     });
 
     // Restart if exit
-    processes.modem.on('exit', (reason: string): void => {
+    processes.modem?.on('exit', (reason: string): void => {
         logMessage(`Modem script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.modem = null;
 
@@ -53,12 +53,12 @@ function launchSensor(): void {
     processes.sensor = fork(`${__dirname}/src/scripts/sensor.${fileType}`);
 
     // Fetch data
-    processes.sensor.on('message', (data: any): void => {
-        logMessage(JSON.stringify(data), LogLevel.DATA);
+    processes.sensor?.on('message', (data: any): void => {
+        processes.stream?.send(data);
     });
 
     // Restart if exit
-    processes.sensor.on('exit', (reason: string): void => {
+    processes.sensor?.on('exit', (reason: string): void => {
         logMessage(`Sensor script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.sensor = null;
 
@@ -80,18 +80,16 @@ function launchStream(): void {
     processes.stream = fork(`${__dirname}/src/scripts/stream.${fileType}`);
 
     // Fetch data
-    processes.stream.on('message', (data: any): void => {
+    processes.stream?.on('message', (data: any): void => {
         const message: string = JSON.stringify(data) || '';
         if (message === '{"name":"DOMException"}') {
-            if (processes.stream) {
-                processes.stream.kill();
-            }
+            processes.stream?.kill();
         }
-        logMessage(JSON.stringify(data), LogLevel.DATA);
+        logMessage(message, LogLevel.DATA);
     });
 
     // Restart if exit
-    processes.stream.on('exit', (reason: string): void => {
+    processes.stream?.on('exit', (reason: string): void => {
         logMessage(`Stream script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.stream = null;
 

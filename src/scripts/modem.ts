@@ -39,7 +39,7 @@ async function getModemDatas(): Promise<void> {
             };
         }
 
-        sendData({Network: network});
+        sendData({network: network});
     }
 
     // Get signal data
@@ -55,7 +55,7 @@ async function getModemDatas(): Promise<void> {
             };
         }
 
-        sendData({Signal: signal});
+        sendData({signal: signal});
     }
 
     // Get GPS data
@@ -72,7 +72,7 @@ async function getModemDatas(): Promise<void> {
         };
     }
 
-    sendData({GPS: gps});
+    sendData({gps: gps});
 
     data_count++;
     if (data_count === 2) {
