@@ -178,8 +178,14 @@ export async function startStream(): Promise<void> {
             let token = await window.getToken();
 
             let room = new LivekitClient.Room({
-                adaptiveStream: false,
-                dynacast: true
+                adaptiveStream: true,
+                dynacast: true,
+                reconnectPolicy: {
+                    nextRetryDelayInMs: (context) => {
+                        console.log(`Retrying connection n°${context.retryCount} (after ${context.elapsedMs}ms)`,);
+                        return 200;
+                    }
+                }
             });
 
             // Send data to room
@@ -200,20 +206,22 @@ export async function startStream(): Promise<void> {
             await room.prepareConnection(await window.getEnvVariable('API_WS_URL'), token);
 
             room
-                .on(LivekitClient.RoomEvent.Connected, () => connected = true)
-                .on(LivekitClient.RoomEvent.Reconnecting, () => connected = false)
-                .on(LivekitClient.RoomEvent.Reconnected, () => connected = true)
-                .on(LivekitClient.RoomEvent.Disconnected, async function () {
+                .on(LivekitClient.RoomEvent.ConnectionQualityChanged, (value) => console.log('ConnectionQualityChanged:', value))
+                .on(LivekitClient.RoomEvent.Connected, async function () {
+                    console.log('Connected');
+                    connected = true;
+                })
+                .on(LivekitClient.RoomEvent.Reconnecting, async function () {
+                    console.log('Reconnecting');
                     connected = false;
-                    window.removeEventListener('data', dataEvent);
-
-                    await room.disconnect();
-                    await room.removeAllListeners();
-
-                    room = null;
-                    token = null;
-
-                    setTimeout(startSession);
+                })
+                .on(LivekitClient.RoomEvent.Reconnected, async function () {
+                    console.log('Reconnected');
+                    connected = true;
+                })
+                .on(LivekitClient.RoomEvent.Disconnected, async function () {
+                    console.log('Disconnected');
+                    connected = false;
                 });
 
             await room.connect(await window.getEnvVariable('API_WS_URL'), token);
