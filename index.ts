@@ -81,6 +81,12 @@ function launchStream(): void {
 
     // Fetch data
     processes.stream.on('message', (data: any): void => {
+        const message: string = JSON.stringify(data) || '';
+        if (message === '{"name":"DOMException"}') {
+            if (processes.stream) {
+                processes.stream.kill();
+            }
+        }
         logMessage(JSON.stringify(data), LogLevel.DATA);
     });
 
