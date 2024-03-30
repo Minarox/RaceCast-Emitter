@@ -1,5 +1,17 @@
-import {executeAT, logMessage, wait} from "../utils";
+import {execute, executeAT, logMessage, wait} from "../utils";
 import {LogLevel} from "../types/global";
+
+/**
+ * Restart audio services of the system
+ *
+ * @returns {Promise<void>}
+ */
+async function setupAudio(): Promise<void> {
+    await execute('systemctl --user restart pulseaudio.service');
+    await execute('systemctl --user restart wireplumber.service');
+    await execute('systemctl --user restart pipewire.service');
+    await execute('systemctl --user restart pipewire-pulse.service');
+}
 
 /**
  * Set modem settings for serial communication
@@ -56,6 +68,7 @@ export async function setup(): Promise<void> {
     logMessage(`Setup environment...`);
 
     try {
+        await setupAudio();
         await setupModem();
         await setupGPS();
 
