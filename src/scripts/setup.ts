@@ -68,7 +68,10 @@ export async function setup(): Promise<void> {
     logMessage(`Setup environment...`);
 
     try {
-        await setupAudio();
+        // Setup audio if not running as root
+        if (!(process.getuid && process.getuid() === 0) || !(process.env['SUDO_UID'])) {
+            await setupAudio();
+        }
         await setupModem();
         await setupGPS();
 
