@@ -244,10 +244,10 @@ export async function startStream(): Promise<void> {
                 stream: "main",
                 source: "camera",
                 simulcast: false,
-                videoCodec: "h264",
+                videoCodec: "AV1",
                 videoEncoding: {
-                    maxFramerate: 25,
-                    maxBitrate: 300_000,
+                    maxFramerate: 24,
+                    maxBitrate: 800_000,
                     priority: "high"
                 }
             });
