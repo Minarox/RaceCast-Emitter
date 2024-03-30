@@ -73,9 +73,7 @@ async function getSensorDatas(): Promise<void> {
     if (process.send) {
         process.send({Sensor: data});
     } else {
-        if (process.stdout.isTTY) {
-            logMessage(JSON.stringify({Sensor: data}), LogLevel.DATA);
-        }
+        logMessage(JSON.stringify({Sensor: data}), LogLevel.DATA);
     }
 }
 

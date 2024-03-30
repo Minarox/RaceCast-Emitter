@@ -15,9 +15,7 @@ function sendData(data: any): void {
     if (process.send) {
         process.send(data);
     } else {
-        if (process.stdout.isTTY) {
-            logMessage(JSON.stringify(data), LogLevel.DATA);
-        }
+        logMessage(JSON.stringify(data), LogLevel.DATA);
     }
 }
 

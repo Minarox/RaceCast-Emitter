@@ -30,9 +30,7 @@ function reportMessage(message: string, type: LogLevel = LogLevel.INFO): void {
     if (process.send) {
         process.send(message);
     } else {
-        if (process.stdout.isTTY) {
-            logMessage(message, type);
-        }
+        logMessage(message, type);
     }
 }
 
