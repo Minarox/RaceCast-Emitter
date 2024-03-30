@@ -7,12 +7,6 @@ import {fork} from 'child_process';
 // Load environment variables from .env file
 dotenv.config();
 
-// Check if the script is running as root
-if (!!(process.getuid && process.getuid() === 0) || !!(process.env['SUDO_UID'])) {
-    logMessage(`This script must not be run as root. Exiting...`, LogLevel.ERROR);
-    process.exit(1);
-}
-
 // Variables
 const fileType: string = process.env['NODE_ENV'] === 'production' ? 'js' : 'ts';
 let cleanupCalled: boolean = false;
