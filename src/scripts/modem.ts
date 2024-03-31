@@ -15,9 +15,7 @@ function sendData(data: any): void {
     if (process.send) {
         process.send(data);
     } else {
-        if (process.stdout.isTTY) {
-            logMessage(JSON.stringify(data), LogLevel.DATA);
-        }
+        logMessage(JSON.stringify(data), LogLevel.DATA);
     }
 }
 
@@ -41,7 +39,7 @@ async function getModemDatas(): Promise<void> {
             };
         }
 
-        sendData({Network: network});
+        sendData({network: network});
     }
 
     // Get signal data
@@ -57,7 +55,7 @@ async function getModemDatas(): Promise<void> {
             };
         }
 
-        sendData({Signal: signal});
+        sendData({signal: signal});
     }
 
     // Get GPS data
@@ -74,7 +72,7 @@ async function getModemDatas(): Promise<void> {
         };
     }
 
-    sendData({GPS: gps});
+    sendData({gps: gps});
 
     data_count++;
     if (data_count === 2) {

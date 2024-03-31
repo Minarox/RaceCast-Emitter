@@ -52,30 +52,28 @@ async function getSensorDatas(): Promise<void> {
     const data: Sensor = sensor.readSync();
 
     // Remove unused values
+    delete data.accel.z;
     delete data.gyro;
     delete data.rotation;
 
     // Offset calibration
     data.accel.x -= 0.058978759765625;
     data.accel.y -= 0.0088987060546875;
-    data.accel.z -= 0.059643090820312494;
 
     // Transform data
     limitDecimals(data);
     data.temp = averageTemperature(data.temp);
 
-    // Invert accel y and z
-    reverse = data.accel.z * -1;
-    data.accel.z = data.accel.y;
-    data.accel.y = reverse;
+    // Invert accel x and y
+    reverse = data.accel.x;
+    data.accel.x = data.accel.y;
+    data.accel.y = -reverse;
 
     // Show / Send data
     if (process.send) {
-        process.send({Sensor: data});
+        process.send({sensor: data});
     } else {
-        if (process.stdout.isTTY) {
-            logMessage(JSON.stringify({Sensor: data}), LogLevel.DATA);
-        }
+        logMessage(JSON.stringify({sensor: data}), LogLevel.DATA);
     }
 }
 

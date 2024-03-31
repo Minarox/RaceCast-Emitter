@@ -2,7 +2,7 @@ export interface Sensor {
     accel: {
         x: number;
         y: number;
-        z: number;
+        z?: number;
     };
     gyro?: {
         x: number;
