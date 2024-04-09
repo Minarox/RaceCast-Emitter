@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@types/i2c-bus": "^5.1.2",
-    "@types/node": "^20.12.5",
+    "@types/node": "^20.12.6",
     "ts-node": "^10.9.2",
     "tsimportlib": "^0.0.5",
     "typescript": "^5.4.4",
