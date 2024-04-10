@@ -33,7 +33,6 @@
       <a href="#getting-started">Getting Started</a>
       <ul>
         <li><a href="#prerequisites">Prerequisites</a></li>
-        <li><a href="#test-scripts">Test scripts</a></li>
         <li><a href="#deploy-on-embedded-system">Deploy on embedded system</a></li>
       </ul>
     </li>
@@ -43,15 +42,21 @@
 
 ## About The Project
 
-Node.js scripts for acquiring and transmitting data and media stream from the various sensors mounted on the embedded system from the race car through cellular network.
+Javascript app for acquiring and transmitting data and media stream from the various sensors mounted on the embedded system from the race car through cellular network.
 
 ### Features
 
-- TODO
+- Init environment (reset linux services, setup GPS, etc.)
+- Read MPU6050 sensor and GPS datas
+- Connect and share GoPro stream and other datas throught LiveKit
 
 ### Tech Stack
 
-- TODO
+- [TypeScript](https://www.typescriptlang.org/)
+- [LiveKit](https://github.com/livekit/server-sdk-js)
+- [Puppeteer](https://pptr.dev/)
+- [Dotenv](https://github.com/motdotla/dotenv)
+- I2C [bus](https://github.com/fivdi/i2c-bus) and [mpu6050](https://github.com/emersion/node-i2c-mpu6050)
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
@@ -59,20 +64,39 @@ Node.js scripts for acquiring and transmitting data and media stream from the va
 
 ### Prerequisites
 
-- TODO
+This project is highly hardware / software dependant and as not been tested on other component expect mine :
+- Raspberry Pi 5 (with Ubuntu 22.04 and ModemManager deactivated)
+- Quectel EC25 Modem (preconfigured in ECM mode, with an "Orange" SIM card)
+- MPU6050
+- GoPro Hero 12 Black
+- Elgato CamLink 4K
 
-Add user to "dialout" group to allow communication with modem's serial ports :
+The current user need to be added to the "dialout" group to allow communication with the modem's serial ports without `sudo` :
 ```bash
 sudo gpasswd -a username dialout
 ```
 
-### Test scripts
-
-- TODO
-
 ### Deploy on embedded system
 
-- TODO
+1. Clone the project and install dependencies :
+```bash
+git clone https://github.com/RaceCast/Emitter
+cd Emitter
+npm i
+```
+
+2. Create `.env` file based on the `.env.example` template.
+
+3. Build TypeScript files :
+```bash
+npm run build
+```
+
+4. Run the app :
+```bash
+npm start
+```
+The app automaticaly setting up environment and start needed scripts.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
