@@ -11,9 +11,7 @@ import {LogLevel} from "./types/global";
 export function logMessage(message: string, level: LogLevel = LogLevel.INFO): void {
     const type: string = level === LogLevel.ERROR ? 'stderr' : 'stdout';
 
-    // if (process[type].isTTY) {
     process[type].write(`[${new Date().toLocaleTimeString('fr-FR')}] [${level}] ${message}\n`);
-    // }
 }
 
 /**
