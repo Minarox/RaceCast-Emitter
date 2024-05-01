@@ -48,26 +48,3 @@ export async function getToken(): Promise<string> {
 
     return token;
 }
-
-/**
- * Update Room metadata with new data
- *
- * @param {any} data - Data to send to the room
- * @returns {Promise<void>}
- */
-export async function setRoomMetadata(data: any): Promise<void> {
-    const liveKitSDK: any = await dynamicImport('livekit-server-sdk', module) as typeof import('livekit-server-sdk');
-    const roomService: any = new liveKitSDK.RoomServiceClient(
-        process.env['API_URL'] || '',
-        process.env['API_KEY'],
-        process.env['API_SECRET']
-    );
-
-    await roomService.updateRoomMetadata(
-        process.env['API_ROOM'] || '',
-        JSON.stringify({
-            ...data,
-            updated_at: new Date()
-        })
-    );
-}
