@@ -28,7 +28,7 @@
     "dotenv": "^16.4.5",
     "i2c-bus": "^5.2.3",
     "i2c-mpu6050": "^2.3.0",
-    "livekit-server-sdk": "^2.1.2",
+    "livekit-server-sdk": "^2.2.0",
     "puppeteer-core": "^22.7.1"
   },
   "devDependencies": {
