@@ -10,14 +10,6 @@ export enum Type {
 }
 
 /**
- * Network data returned by the modem
- */
-export interface Network {
-    type: string;
-    channel: number;
-}
-
-/**
  * GPS data returned by the modem
  */
 export interface GPS {

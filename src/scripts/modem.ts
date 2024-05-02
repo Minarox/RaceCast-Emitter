@@ -1,5 +1,5 @@
 import {executeAT, logMessage} from "../utils";
-import {GPS, Network, Signal} from "../types/modem";
+import {GPS} from "../types/modem";
 import {LogLevel} from "../types/global";
 
 // Count data to switch between commands
@@ -27,15 +27,12 @@ function sendData(data: any): void {
 async function getModemDatas(): Promise<void> {
     // Get network data
     if (data_count === 0) {
-        let network: Network | null = null;
+        let network: string | null = null;
         const networkResponse: string = await executeAT(`AT+QNWINFO`);
 
         if (networkResponse.trim().startsWith("+QNWINFO:")) {
             const data: Array<string> = networkResponse.trim().split(":")[1].trim().split(",");
-            network = {
-                type: data[0].slice(1, -1),
-                channel: parseInt(data[3].slice(1, -6))
-            };
+            network = data[0].slice(1, -1);
         }
 
         sendData({network: network});
