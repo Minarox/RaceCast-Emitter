@@ -1,6 +1,6 @@
 /**
  * Type of component of the modem
- * 
+ *
  * @enum {string}
  */
 export enum Type {
@@ -14,16 +14,7 @@ export enum Type {
  */
 export interface Network {
     type: string;
-    band: string;
     channel: number;
-}
-
-/**
- * Signal data returned by the modem
- */
-export interface Signal {
-    strength: number;
-    error_rate: number;
 }
 
 /**

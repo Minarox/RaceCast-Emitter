@@ -34,7 +34,6 @@ async function getModemDatas(): Promise<void> {
             const data: Array<string> = networkResponse.trim().split(":")[1].trim().split(",");
             network = {
                 type: data[0].slice(1, -1),
-                band: data[2].slice(1, -1),
                 channel: parseInt(data[3].slice(1, -6))
             };
         }
@@ -44,15 +43,12 @@ async function getModemDatas(): Promise<void> {
 
     // Get signal data
     if (data_count === 1) {
-        let signal: Signal | null = null;
+        let signal: number | null = null;
         const signalResponse: string = await executeAT(`AT+CSQ`);
 
         if (signalResponse.trim().startsWith("+CSQ:")) {
             const data: Array<string> = signalResponse.trim().split(":")[1].trim().split(",");
-            signal = {
-                strength: parseInt(data[0]),
-                error_rate: parseInt(data[1])
-            };
+            signal = parseInt(data[0]);
         }
 
         sendData({signal: signal});
