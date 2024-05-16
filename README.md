@@ -85,7 +85,14 @@ cd Emitter
 npm i
 ```
 
-2. Create `.env` file based on the `.env.example` template.
+2. Create `.env` file at the root of the project with these variables:
+```dotenv
+LIVEKIT_WS_URL="wss://example.com"
+LIVEKIT_HTTP_URL="https://example.com"
+LIVEKIT_KEY="key"
+LIVEKIT_SECRET="secret"
+LIVEKIT_ROOM="room"
+```
 
 3. Build TypeScript files :
 ```bash
