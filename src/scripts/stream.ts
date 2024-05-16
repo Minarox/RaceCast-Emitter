@@ -66,7 +66,7 @@ export async function getBrowser(): Promise<any> {
 
     // Launch the browser
     browser = await puppeteer.launch({
-        executablePath: 'chromium',
+        executablePath: '/usr/bin/chromium',
         args: [
             '--disable-setuid-sandbox',
             '--no-sandbox',
@@ -112,7 +112,7 @@ async function getPage(): Promise<any> {
  */
 export async function startStream(): Promise<void> {
     const page = await getPage();
-    await page.goto('https://live.minarox.fr', {waitUntil: 'load'});
+    await page.goto(`https://${process.env['LIVEKIT_URL']}`, {waitUntil: 'load'});
 
     page.on('console', async (msg: any): Promise<void> => {
         const msgArgs = msg.args();
@@ -204,7 +204,7 @@ export async function startStream(): Promise<void> {
                 );
             }
 
-            await room.prepareConnection(await window.getEnvVariable('API_WS_URL'), token);
+            await room.prepareConnection(`wss://${await window.getEnvVariable('LIVEKIT_URL')}`, token);
 
             room
                 .on(LivekitClient.RoomEvent.Connected, () => window.setConnected(true))
@@ -212,7 +212,7 @@ export async function startStream(): Promise<void> {
                 .on(LivekitClient.RoomEvent.Reconnected, () => window.setConnected(true))
                 .on(LivekitClient.RoomEvent.Disconnected, () => window.setConnected(false));
 
-            await room.connect(await window.getEnvVariable('API_WS_URL'), token);
+            await room.connect(`wss://${await window.getEnvVariable('LIVEKIT_URL')}`, token);
 
             await room.localParticipant.publishTrack(tracks.audio, {
                 name: "main-audio",
