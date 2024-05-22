@@ -3,7 +3,7 @@ import puppeteer from 'puppeteer-core';
 import fs from 'fs';
 import {logMessage} from '../utils';
 import {LogLevel, asProcessArg} from '../types/global';
-import {getToken} from "./livekit";
+import {getToken} from './livekit';
 
 // Variables
 let browser: any = null;
@@ -66,8 +66,8 @@ export async function newPage(): Promise<any> {
         '--use-fake-ui-for-media-stream',
         '--autoplay-policy=no-user-gesture-required'
     ]
-    if (asProcessArg("fake-devices")) {
-        args.push("--use-fake-device-for-media-stream")
+    if (asProcessArg('fake-devices')) {
+        args.push('--use-fake-device-for-media-stream')
     }
 
     // Launch the browser
@@ -82,7 +82,7 @@ export async function newPage(): Promise<any> {
 
     // Allow permissions
     const context: any = browser.defaultBrowserContext();
-    await context.overridePermissions(process.env['LIVEKIT_HTTP_URL'], ["microphone", "camera"]);
+    await context.overridePermissions(process.env['LIVEKIT_HTTP_URL'], ['microphone', 'camera']);
 
     // Open new page
     page = await browser.newPage();
@@ -151,10 +151,10 @@ export async function startStream(): Promise<void> {
         // Create local video and audio tracks
         async function createTracks() {
             const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(device => device.kind === "videoinput");
-            const audioDevices = devices.filter(device => device.kind === "audioinput");
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            const audioDevices = devices.filter(device => device.kind === 'audioinput');
 
-            const createVideoTrack = async (deviceId, maxBitrate = 400_000, priority = "high") => {
+            const createVideoTrack = async (deviceId, maxBitrate = 400_000, priority = 'high') => {
                 if (!deviceId) {
                     return null;
                 }
@@ -188,20 +188,20 @@ export async function startStream(): Promise<void> {
             }
 
             if (!tracks.main.video) {
-                tracks.main.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith("Cam Link 4K"))?.deviceId);
+                tracks.main.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId);
             }
 
             if (!tracks.main.audio) {
-                tracks.main.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith("Cam Link 4K"))?.deviceId);
+                tracks.main.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId);
             }
 
             if (!oneCamera) {
                 if (!tracks.aux.video) {
-                    tracks.aux.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith("Cam Link 4K"))?.deviceId, 300_000, "low");
+                    tracks.aux.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId, 300_000, 'low');
                 }
 
                 if (!tracks.aux.audio) {
-                    tracks.aux.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith("Cam Link 4K"))?.deviceId);
+                    tracks.aux.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId);
                 }
             }
 
@@ -211,10 +211,10 @@ export async function startStream(): Promise<void> {
                 setTimeout(createTracks, 500);
             } else {
                 try {
-                    console.log("Connecting to LiveKit...");
+                    console.log('Connecting to LiveKit...');
                     setTimeout(startSession);
                 } catch {
-                    console.log("Crash. Restarting...");
+                    console.log('Crash. Restarting...');
                     window.removeEventListener('data', dataEvent)
                     room = null
                     setTimeout(startSession);
@@ -241,19 +241,19 @@ export async function startStream(): Promise<void> {
 
             room
                 .on(LivekitClient.RoomEvent.Connected, () => {
-                    console.log("Connected");
+                    console.log('Connected');
                     window.addEventListener('data', dataEvent);
                 })
                 .on(LivekitClient.RoomEvent.Reconnecting, () => {
-                    console.log("Reconnecting...");
+                    console.log('Reconnecting...');
                     window.removeEventListener('data', dataEvent);
                 })
                 .on(LivekitClient.RoomEvent.Reconnected, () => {
-                    console.log("Reconnected");
+                    console.log('Reconnected');
                     window.addEventListener('data', dataEvent);
                 })
                 .on(LivekitClient.RoomEvent.Disconnected, () => {
-                    console.log("Disconnected. Restarting...");
+                    console.log('Disconnected. Restarting...');
                     window.removeEventListener('data', dataEvent);
                     room = null
                     setTimeout(startSession);
@@ -264,17 +264,17 @@ export async function startStream(): Promise<void> {
             if (fakeDevices) {
                 await room.localParticipant.enableCameraAndMicrophone();
             } else {
-                const publishVideoTrack = async (track, stream = "main", maxBitrate = 400_000, priority = "high",) => {
+                const publishVideoTrack = async (track, stream = 'main', maxBitrate = 400_000, priority = 'high') => {
                     if (!track) {
                         return;
                     }
 
                     await room.localParticipant.publishTrack(track, {
-                        name: "main-video",
-                        stream: "main",
-                        source: "camera",
+                        name: `${stream}-video`,
+                        stream: stream,
+                        source: 'camera',
                         simulcast: false,
-                        videoCodec: "AV1",
+                        videoCodec: 'AV1',
                         videoEncoding: {
                             maxFramerate: 24,
                             maxBitrate: maxBitrate,
@@ -284,7 +284,7 @@ export async function startStream(): Promise<void> {
                     });
                 }
 
-                const publishAudioTrack = async (track, stream = "main") => {
+                const publishAudioTrack = async (track, stream = 'main') => {
                     if (!track) {
                         return;
                     }
@@ -292,7 +292,7 @@ export async function startStream(): Promise<void> {
                     await room.localParticipant.publishTrack(track, {
                         name: `${stream}-audio`,
                         stream: stream,
-                        source: "audio",
+                        source: 'audio',
                         simulcast: false,
                         red: true,
                         dtx: true,
@@ -307,17 +307,17 @@ export async function startStream(): Promise<void> {
                 await publishAudioTrack(tracks.main.audio);
 
                 if (!oneCamera) {
-                    await publishVideoTrack(tracks.aux.video, "aux", 300_000, "low");
-                    await publishAudioTrack(tracks.aux.audio, "aux");
+                    await publishVideoTrack(tracks.aux.video, 'aux', 300_000, 'low');
+                    await publishAudioTrack(tracks.aux.audio, 'aux');
                 }                
             }
         }
 
         if (fakeDevices) {
-            console.log("Connecting to LiveKit...");
+            console.log('Connecting to LiveKit...');
             setTimeout(startSession);
         } else {
-            console.log("Creating tracks...");
+            console.log('Creating tracks...');
             setTimeout(createTracks);
         }
     });
