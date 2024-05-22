@@ -14,8 +14,33 @@ export async function getToken(): Promise<string> {
         return token;
     }
 
-    // Generate a new token
+    // Import SDK
     const liveKitSDK: any = await dynamicImport('livekit-server-sdk', module) as typeof import('livekit-server-sdk');
+
+    // Check room
+    const roomService = new liveKitSDK.RoomServiceClient(
+        process.env['LIVEKIT_HTTP_URL'],
+        process.env['LIVEKIT_KEY'],
+        process.env['LIVEKIT_SECRET']
+    );
+
+    const rooms: any = await roomService.listRooms();
+    const createRoom: boolean = rooms.some((room: any): boolean => {
+        if (room.name === process.env['LIVEKIT_ROOM']) {
+            return true;
+        }
+        return false;
+    })
+    
+    if (createRoom) {
+          await roomService.createRoom({
+            departureTimeout: 999999999,
+            emptyTimeout: 999999999,
+            name: process.env['LIVEKIT_ROOM']
+          });
+    }
+
+    // Generate a new token
     const accessToken: any = new liveKitSDK.AccessToken(
         process.env['LIVEKIT_KEY'],
         process.env['LIVEKIT_SECRET'],
