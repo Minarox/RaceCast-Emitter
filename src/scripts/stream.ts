@@ -4,6 +4,7 @@ import fs from 'fs';
 import {logMessage} from '../utils';
 import {LogLevel, asProcessArg} from '../types/global';
 import {getToken} from './livekit';
+import { track } from '@vue/reactivity';
 
 // Variables
 let browser: any = null;
@@ -125,6 +126,7 @@ export async function startStream(): Promise<void> {
         let room = null;
         const fakeDevices = await asArg('fake-devices')
         const oneCamera = await asArg('one-camera');
+        const noCamera = await asArg('no-camera');
         const tracks = {
             main: {
                 video: null,
@@ -154,7 +156,7 @@ export async function startStream(): Promise<void> {
             const videoDevices = devices.filter(device => device.kind === 'videoinput');
             const audioDevices = devices.filter(device => device.kind === 'audioinput');
 
-            const createVideoTrack = async (deviceId, maxBitrate = 400_000, priority = 'high') => {
+            const createVideoTrack = async (deviceId, width = 640, height = 360, maxBitrate = 400_000, priority = 'high') => {
                 if (!deviceId) {
                     return null;
                 }
@@ -162,8 +164,8 @@ export async function startStream(): Promise<void> {
                 return await LivekitClient.createLocalVideoTrack({
                     deviceId: deviceId,
                     resolution: {
-                        height: 360,
-                        width: 640,
+                        width: width,
+                        height: height,
                         encoding: {
                             maxFramerate: 24,
                             maxBitrate: maxBitrate,
@@ -173,7 +175,7 @@ export async function startStream(): Promise<void> {
                 });
             }
 
-            const createAudioTrack = async (deviceId) => {
+            const createAudioTrack = async (deviceId, channelCount = 1) => {
                 if (!deviceId) {
                     return null;
                 }
@@ -183,11 +185,11 @@ export async function startStream(): Promise<void> {
                     autoGainControl: true,
                     echoCancellation: false,
                     noiseSuppression: false,
-                    channelCount: 2
+                    channelCount: channelCount
                 });
             }
 
-            if (!tracks.main.video) {
+            if (!noCamera && !tracks.main.video) {
                 tracks.main.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId);
             }
 
@@ -196,29 +198,32 @@ export async function startStream(): Promise<void> {
             }
 
             if (!oneCamera) {
-                if (!tracks.aux.video) {
-                    tracks.aux.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId, 300_000, 'low');
+                if (!noCamera && !tracks.aux.video) {
+                    tracks.aux.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId, 352, 240, 200_000, 'low');
                 }
 
                 if (!tracks.aux.audio) {
-                    tracks.aux.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId);
+                    tracks.aux.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId, 2);
                 }
             }
 
-            if (oneCamera && !tracks.main.video || !tracks.main.audio) {
-                setTimeout(createTracks, 500);
-            } else if (!tracks.main.video || !tracks.main.audio || !tracks.aux.video || !tracks.aux.audio) {
-                setTimeout(createTracks, 500);
-            } else {
-                try {
-                    console.log('Connecting to LiveKit...');
-                    setTimeout(startSession);
-                } catch {
-                    console.log('Crash. Restarting...');
-                    window.removeEventListener('data', dataEvent)
-                    room = null
-                    setTimeout(startSession);
-                }
+            switch (true) {
+                case oneCamera && noCamera && !tracks.main.audio:
+                case !oneCamera && noCamera && (!tracks.main.audio || !tracks.aux.audio):
+                case oneCamera && !noCamera && (!tracks.main.video || !tracks.main.audio):
+                case !oneCamera && !noCamera && (!tracks.main.video || !tracks.main.audio || !tracks.aux.video || !tracks.aux.audio):
+                    setTimeout(createTracks, 500);
+                default:
+                    try {
+                        console.log('Connecting to LiveKit...');
+                        setTimeout(startSession);
+                    } catch {
+                        console.log('Crash. Restarting...');
+                        window.removeEventListener('data', dataEvent)
+                        room = null
+                        setTimeout(startSession);
+                    }
+                    break;
             }
         }
 
@@ -283,7 +288,7 @@ export async function startStream(): Promise<void> {
                     });
                 }
 
-                const publishAudioTrack = async (track, stream = 'main') => {
+                const publishAudioTrack = async (track, stream = 'main', maxBitrate = 12_000) => {
                     if (!track) {
                         return;
                     }
@@ -297,17 +302,21 @@ export async function startStream(): Promise<void> {
                         dtx: true,
                         stopMicTrackOnMute: false,
                         audioPreset: {
-                            maxBitrate: 48_000
+                            maxBitrate: maxBitrate
                         }
                     });
                 }
 
-                await publishVideoTrack(tracks.main.video);
+                if (!noCamera) {
+                    await publishVideoTrack(tracks.main.video);
+                }
                 await publishAudioTrack(tracks.main.audio);
 
                 if (!oneCamera) {
-                    await publishVideoTrack(tracks.aux.video, 'aux', 300_000, 'low');
-                    await publishAudioTrack(tracks.aux.audio, 'aux');
+                    if (!noCamera) {
+                        await publishVideoTrack(tracks.aux.video, 'aux', 200_000, 'low');
+                    }
+                    await publishAudioTrack(tracks.aux.audio, 'aux', 32_000);
                 }                
             }
         }
