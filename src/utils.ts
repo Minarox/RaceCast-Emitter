@@ -55,3 +55,13 @@ export function wait(ms: number): void {
         now = Date.now();
     }
 }
+
+/**
+ * Check if process argument is present
+ *
+ * @param {string} argument - Argument to check
+ * @returns {boolean} - True if argument is present
+ */
+export function asProcessArg(argument: string): boolean {
+    return process.argv.slice(2).includes(argument);
+}

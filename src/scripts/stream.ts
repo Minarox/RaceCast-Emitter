@@ -1,10 +1,9 @@
 // @ts-nocheck
 import puppeteer from 'puppeteer-core';
 import fs from 'fs';
-import {logMessage} from '../utils';
-import {LogLevel, asProcessArg} from '../types/global';
-import {getToken} from './livekit';
-import { track } from '@vue/reactivity';
+import {logMessage, asProcessArg} from '../utils';
+import {LogLevel} from '../types/global';
+import {getToken} from "./livekit";
 
 // Variables
 let browser: any = null;
@@ -115,7 +114,7 @@ export async function startStream(): Promise<void> {
     await page.exposeFunction('setReady', value => setReady(value));
     await page.exposeFunction('asArg', argument => asProcessArg(argument));
     await page.exposeFunction('getEnvVariable', name => getEnvVariable(name));
-    
+
     const script: string = fs.readFileSync(`${__dirname}/../libs/livekit-client.min.js`, 'utf8');
     await page.addScriptTag({content: script});
 
@@ -317,7 +316,7 @@ export async function startStream(): Promise<void> {
                         await publishVideoTrack(tracks.aux.video, 'aux', 200_000, 'low');
                     }
                     await publishAudioTrack(tracks.aux.audio, 'aux', 32_000);
-                }                
+                }
             }
         }
 
