@@ -1,8 +1,8 @@
 // @ts-nocheck
 import puppeteer from 'puppeteer-core';
 import fs from 'fs';
-import {logMessage} from '../utils';
-import {LogLevel, asProcessArg} from '../types/global';
+import {logMessage, asProcessArg} from '../utils';
+import {LogLevel} from '../types/global';
 import {getToken} from "./livekit";
 
 // Variables

@@ -20,11 +20,14 @@ async function setupAudio(): Promise<void> {
  */
 async function setupModem(): Promise<void> {
     await executeAT(`ATE0`).catch();
-    const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",0`);
-
-    if (scanModeResponse.trim() !== 'OK') {
-        throw new Error(`Unable to set modem settings`);
-    }
+    await executeAT(`AT+COPS=0,0`).catch();
+    await executeAT(`AT+QCFG="roamservice",2,1`).catch();
+    await executeAT(`AT+CGATT=1`).catch();
+    await executeAT(`AT+CGACT=1,1`).catch();
+    await executeAT(`AT+CGQREQ="IP",1,1,5,9,31`).catch();
+    await executeAT(`AT+CGQMIN="IP",2,3,3,7,31`).catch();
+    await executeAT(`AT+CGEQREQ="IP",1,5760,42200,1024,4096,0,0,"0E0","0E0",3,0,0,1,1`).catch();
+    await executeAT(`AT+CGEQMIN="IP",1,0,0,0,0,0,0,"0E0","0E0",3,0,0,0,0`).catch();
 }
 
 /**
@@ -51,9 +54,10 @@ async function setupGPS(): Promise<void> {
  * @returns {Promise<true>} True when the modem is connected
  */
 async function waitForConnection(): Promise<true> {
+    const registeredResponse: string = await executeAT(`AT+CREG?`);
     const connectedResponse: string = await executeAT(`AT+CGATT?`);
 
-    if (!connectedResponse.trim().startsWith('+CGATT: 1')) {
+    if (!registeredResponse.trim().startsWith('+CREG: 0,1') || !connectedResponse.trim().startsWith('+CGATT: 1')) {
         await waitForConnection();
     }
     return true;
@@ -72,7 +76,7 @@ export async function setup(): Promise<void> {
         if (!(process.getuid && process.getuid() === 0) || !(process.env['SUDO_UID'])) {
             await setupAudio();
         }
-        await setupModem();
+	await setupModem();
         await setupGPS();
 
         logMessage(`Wait internet connection...`);
@@ -96,8 +100,6 @@ export async function clearSetup(): Promise<void> {
     try {
         // Disable GPS
         await executeAT(`AT+QGPSEND`);
-        // Search all network type
-        // await executeAT(`AT+QCFG="nwscanmode",0`);
     } catch (error) {
         logMessage(`Error clearing environment:\n${error}`, LogLevel.ERROR);
         process.exit(1);

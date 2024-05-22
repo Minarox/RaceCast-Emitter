@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
-import {logMessage} from "./src/utils";
-import {LogLevel, Processes, asProcessArg} from "./src/types/global";
+import {logMessage, asProcessArg} from "./src/utils";
+import {LogLevel, Processes} from "./src/types/global";
 import {fork} from 'child_process';
 
 // Load environment variables from .env file
