@@ -279,8 +279,7 @@ export async function startStream(): Promise<void> {
                             maxFramerate: 24,
                             maxBitrate: maxBitrate,
                             priority: priority
-                        },
-                        ...settings
+                        }
                     });
                 }
 
