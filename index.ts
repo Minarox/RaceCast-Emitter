@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
-import {logMessage, asProcessArg} from "./src/utils";
+import {logMessage} from "./src/utils";
 import {LogLevel, Processes} from "./src/types/global";
 import {fork} from 'child_process';
 
@@ -17,9 +17,9 @@ const processes: Processes = {
     stream: null
 };
 
-if (asProcessArg("fake-devices")) {
-    launchArgs.push("fake-devices");
-}
+process.argv.slice(2).forEach((arg: string): void => {
+    launchArgs.push(arg);
+});
 
 /**
  * Launch and listen to sensor script

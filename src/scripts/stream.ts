@@ -123,7 +123,8 @@ export async function startStream(): Promise<void> {
 
         // Variables
         let room = null;
-        const fakeDevices = await asArg('fake-devices')
+        const defaultDevices = await asArg('default-devices');
+        const fakeDevices = await asArg('fake-devices');
         const oneCamera = await asArg('one-camera');
         const noCamera = await asArg('no-camera');
         const tracks = {
@@ -212,6 +213,7 @@ export async function startStream(): Promise<void> {
                 case oneCamera && !noCamera && (!tracks.main.video || !tracks.main.audio):
                 case !oneCamera && !noCamera && (!tracks.main.video || !tracks.main.audio || !tracks.aux.video || !tracks.aux.audio):
                     setTimeout(createTracks, 500);
+                    break;
                 default:
                     try {
                         console.log('Connecting to LiveKit...');
@@ -265,8 +267,9 @@ export async function startStream(): Promise<void> {
 
             await room.connect(url, token);
 
-            if (fakeDevices) {
-                await room.localParticipant.enableCameraAndMicrophone();
+            if (fakeDevices || defaultDevices) {
+                await room.localParticipant.setCameraEnabled(true);
+                await room.localParticipant.setMicrophoneEnabled(true);
             } else {
                 const publishVideoTrack = async (track, stream = 'main', maxBitrate = 400_000, priority = 'high') => {
                     if (!track) {
@@ -320,7 +323,7 @@ export async function startStream(): Promise<void> {
             }
         }
 
-        if (fakeDevices) {
+        if (fakeDevices || defaultDevices) {
             console.log('Connecting to LiveKit...');
             setTimeout(startSession);
         } else {
