@@ -2,7 +2,7 @@
 import puppeteer from 'puppeteer-core';
 import fs from 'fs';
 import {logMessage} from '../utils';
-import {LogLevel} from '../types/global';
+import {LogLevel, asProcessArg} from '../types/global';
 import {getToken} from "./livekit";
 
 // Variables
@@ -64,16 +64,22 @@ export async function getBrowser(): Promise<any> {
         return browser;
     }
 
+    // Prepare args
+    const args: string[] = [
+        '--disable-setuid-sandbox',
+        '--no-sandbox',
+        '--enable-gpu',
+        '--use-fake-ui-for-media-stream',
+        '--autoplay-policy=no-user-gesture-required'
+    ]
+    if (asProcessArg("fake-devices")) {
+        args.push("--use-fake-device-for-media-stream")
+    }
+
     // Launch the browser
     browser = await puppeteer.launch({
         executablePath: '/usr/bin/chromium',
-        args: [
-            '--disable-setuid-sandbox',
-            '--no-sandbox',
-            '--enable-gpu',
-            '--use-fake-ui-for-media-stream',
-            '--autoplay-policy=no-user-gesture-required'
-        ],
+        args: args,
         ignoreDefaultArgs: [
             '--mute-audio',
             '--hide-scrollbars'
@@ -82,7 +88,7 @@ export async function getBrowser(): Promise<any> {
 
     // Allow permissions
     const context: any = browser.defaultBrowserContext();
-    await context.overridePermissions("https://live.minarox.fr", ["microphone", "camera"]);
+    await context.overridePermissions(process.env['LIVEKIT_HTTP_URL'], ["microphone", "camera"]);
 
     return browser;
 }
@@ -128,12 +134,13 @@ export async function startStream(): Promise<void> {
     await page.exposeFunction('getToken', getToken);
     await page.exposeFunction('setConnected', value => setConnected(value));
     await page.exposeFunction('getConnected', getConnected);
-    await page.exposeFunction('getEnvVariable', (name: string): string | undefined => getEnvVariable(name));
+    await page.exposeFunction('asArg', argument => asProcessArg(argument));
+    await page.exposeFunction('getEnvVariable', name => getEnvVariable(name));
     const script: string = fs.readFileSync(`${__dirname}/../libs/livekit-client.min.js`, 'utf8');
     await page.addScriptTag({content: script});
 
     await page.evaluate(async (): Promise<void> => {
-        window.setConnected(false);
+        await window.setConnected(false);
         let dataListener = false;
         const tracks = {
             audio: null,
@@ -164,7 +171,15 @@ export async function startStream(): Promise<void> {
                 if (deviceId) {
                     tracks.video = await LivekitClient.createLocalVideoTrack({
                         deviceId: deviceId,
-                        resolution: LivekitClient.VideoPresets.h1080.resolution
+                        resolution: {
+                            height: 360,
+                            width: 640,
+                            encoding: {
+                                maxBitrate: 450_000,
+                                maxFramerate: 24,
+                                priority: "high",
+                            }
+                        }
                     })
                 }
             }
@@ -178,7 +193,7 @@ export async function startStream(): Promise<void> {
 
         // Connect to LiveKit room and publish tracks with datas
         async function startSession() {
-            window.setConnected(false);
+            await window.setConnected(false);
             let token = await window.getToken();
 
             let room = new LivekitClient.Room({
@@ -194,7 +209,7 @@ export async function startStream(): Promise<void> {
 
             // Send data to room
             async function dataEvent(event) {
-                if (!window.getConnected() || !room) {
+                if (await !window.getConnected() || !room) {
                     return;
                 }
 
@@ -207,46 +222,54 @@ export async function startStream(): Promise<void> {
             await room.prepareConnection(await window.getEnvVariable('LIVEKIT_WS_URL'), token);
 
             room
-                .on(LivekitClient.RoomEvent.Connected, () => window.setConnected(true))
-                .on(LivekitClient.RoomEvent.Reconnecting, () => window.setConnected(false))
-                .on(LivekitClient.RoomEvent.Reconnected, () => window.setConnected(true))
-                .on(LivekitClient.RoomEvent.Disconnected, () => window.setConnected(false));
+                .on(LivekitClient.RoomEvent.Connected, async () => await window.setConnected(true))
+                .on(LivekitClient.RoomEvent.Reconnecting, async () => await window.setConnected(false))
+                .on(LivekitClient.RoomEvent.Reconnected, async () => await window.setConnected(true))
+                .on(LivekitClient.RoomEvent.Disconnected, async () => await window.setConnected(false));
 
             await room.connect(await window.getEnvVariable('LIVEKIT_WS_URL'), token);
 
-            await room.localParticipant.publishTrack(tracks.audio, {
-                name: "main-audio",
-                stream: "main",
-                source: "audio",
-                simulcast: false,
-                red: true,
-                dtx: true,
-                stopMicTrackOnMute: false,
-                audioPreset: {
-                    maxBitrate: 48_000
-                }
-            });
+            if (await asArg("fake-devices")) {
+                await room.localParticipant.enableCameraAndMicrophone();
+            } else {
+                await room.localParticipant.publishTrack(tracks.audio, {
+                    name: "main-audio",
+                    stream: "main",
+                    source: "audio",
+                    simulcast: false,
+                    red: true,
+                    dtx: true,
+                    stopMicTrackOnMute: false,
+                    audioPreset: {
+                        maxBitrate: 48_000
+                    }
+                });
 
-            await room.localParticipant.publishTrack(tracks.video, {
-                name: "main-video",
-                stream: "main",
-                source: "camera",
-                simulcast: false,
-                videoCodec: "AV1",
-                videoEncoding: {
-                    maxFramerate: 24,
-                    maxBitrate: 800_000,
-                    priority: "high"
-                }
-            });
+                await room.localParticipant.publishTrack(tracks.video, {
+                    name: "main-video",
+                    stream: "main",
+                    source: "camera",
+                    simulcast: false,
+                    videoCodec: "AV1",
+                    videoEncoding: {
+                        maxFramerate: 24,
+                        maxBitrate: 450_000,
+                        priority: "high"
+                    }
+                });
+            }
 
             if (!dataListener) {
                 dataListener = true;
-                window.addEventListener('data', dataEvent);
+                await window.addEventListener('data', dataEvent);
             }
         }
 
-        setTimeout(createTracks);
+        if (await asArg("fake-devices")) {
+            setTimeout(startSession);
+        } else {
+            setTimeout(createTracks);
+        }
     });
 }
 

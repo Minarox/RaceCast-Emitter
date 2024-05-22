@@ -20,7 +20,7 @@ async function setupAudio(): Promise<void> {
  */
 async function setupModem(): Promise<void> {
     await executeAT(`ATE0`).catch();
-    const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",3`);
+    const scanModeResponse: string = await executeAT(`AT+QCFG="nwscanmode",0`);
 
     if (scanModeResponse.trim() !== 'OK') {
         throw new Error(`Unable to set modem settings`);

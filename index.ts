@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
 import {logMessage} from "./src/utils";
-import {LogLevel, Processes} from "./src/types/global";
+import {LogLevel, Processes, asProcessArg} from "./src/types/global";
 import {fork} from 'child_process';
 
 // Load environment variables from .env file
@@ -9,12 +9,17 @@ dotenv.config();
 
 // Variables
 const fileType: string = process.env['NODE_ENV'] === 'production' ? 'js' : 'ts';
+const launchArgs: string[] = [];
 let cleanupCalled: boolean = false;
 const processes: Processes = {
     modem: null,
     sensor: null,
     stream: null
 };
+
+if (asProcessArg("fake-devices")) {
+    launchArgs.push("fake-devices");
+}
 
 /**
  * Launch and listen to sensor script
@@ -23,7 +28,7 @@ const processes: Processes = {
  */
 function launchModem(): void {
     logMessage(`Launching Modem script...`, LogLevel.INFO);
-    processes.modem = fork(`${__dirname}/src/scripts/modem.${fileType}`);
+    processes.modem = fork(`${__dirname}/src/scripts/modem.${fileType}`, launchArgs);
 
     // Fetch data
     processes.modem?.on('message', (data: any): void => {
@@ -50,7 +55,7 @@ function launchModem(): void {
  */
 function launchSensor(): void {
     logMessage(`Launching Sensor script...`, LogLevel.INFO);
-    processes.sensor = fork(`${__dirname}/src/scripts/sensor.${fileType}`);
+    processes.sensor = fork(`${__dirname}/src/scripts/sensor.${fileType}`, launchArgs);
 
     // Fetch data
     processes.sensor?.on('message', (data: any): void => {
@@ -77,7 +82,7 @@ function launchSensor(): void {
  */
 function launchStream(): void {
     logMessage(`Launching Stream script...`, LogLevel.INFO);
-    processes.stream = fork(`${__dirname}/src/scripts/stream.${fileType}`);
+    processes.stream = fork(`${__dirname}/src/scripts/stream.${fileType}`, launchArgs);
 
     // Fetch data
     processes.stream?.on('message', (data: any): void => {
