@@ -1,5 +1,5 @@
 import {execute, executeAT, logMessage, wait} from "../utils";
-import {LogLevel} from "../types/global";
+import {LogLevel} from "../types";
 
 /**
  * Restart audio services of the system
@@ -31,24 +31,6 @@ async function setupModem(): Promise<void> {
 }
 
 /**
- * Setup GPS data format and enable GPS
- *
- * @returns {Promise<void>}
- */
-async function setupGPS(): Promise<void> {
-    const gpsState: string = await executeAT(`AT+QGPS?`);
-    if (gpsState.trim().startsWith("+QGPS: 0")) {
-        // Set data format and enable GPS
-        await executeAT(`AT+QGPSCFG=\"nmeasrc\",1`);
-        await executeAT(`AT+QGPS=1`);
-    } else {
-        // Disable GPS and re-init
-        await executeAT(`AT+QGPSEND`);
-        await setupGPS();
-    }
-}
-
-/**
  * Loop until modem establish a connection to the network
  *
  * @returns {Promise<true>} True when the modem is connected
@@ -58,6 +40,7 @@ async function waitForConnection(): Promise<true> {
     const connectedResponse: string = await executeAT(`AT+CGATT?`);
 
     if (!registeredResponse.trim().startsWith('+CREG: 0,1') || !connectedResponse.trim().startsWith('+CGATT: 1')) {
+        wait(500);
         await waitForConnection();
     }
     return true;
@@ -74,7 +57,6 @@ export async function setup(): Promise<void> {
     try {
         await setupAudio();
 	    await setupModem();
-        await setupGPS();
 
         logMessage(`Wait internet connection...`);
         wait(2000);
@@ -92,7 +74,7 @@ export async function setup(): Promise<void> {
  */
 export async function clearSetup(): Promise<void> {
     logMessage(`Clear environment...`);
-    wait(800);
+    wait(1000);
 
     try {
         // Disable GPS

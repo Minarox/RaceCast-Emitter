@@ -1,74 +1,290 @@
-import {dynamicImport} from "tsimportlib";
+// @ts-nocheck
+import puppeteer from 'puppeteer-core';
+import fs from 'fs';
+import {logMessage, getEnvVariable, asProcessArg, getToken, updateRoomMetadata} from '../utils';
+import {LogLevel} from '../types';
 
 // Variables
-let token: string;
-let tokenCreatedAt: number;
+let browser: any = null;
+let page: any = null;
 
 /**
- * Generate a token for LiveKit (valid for 6 hours)
+ * Show / Send data to the parent process
  *
- * @returns {Promise<string>} Token
+ * @param {string} message - Message to send
+ * @param {LogLevel} type - Type of message
+ * @returns {void}
  */
-export async function getToken(): Promise<string> {
-    if (token && tokenCreatedAt && (Date.now() - tokenCreatedAt) < 60 * 60 * 6 * 1000) {
-        return token;
+function reportMessage(message: string, type: LogLevel = LogLevel.INFO): void {
+    if (process.send) {
+        process.send(message);
+    } else {
+        logMessage(message, type);
     }
+}
 
-    // Import SDK
-    const liveKitSDK: any = await dynamicImport('livekit-server-sdk', module) as typeof import('livekit-server-sdk');
-
-    // Check room
-    const roomService = new liveKitSDK.RoomServiceClient(
-        process.env['LIVEKIT_HTTP_URL'],
-        process.env['LIVEKIT_KEY'],
-        process.env['LIVEKIT_SECRET']
-    );
-
-    const rooms: any = await roomService.listRooms();
-    const createRoom: boolean = !rooms.some((room: any): any => {
-        if (room.name === process.env['LIVEKIT_ROOM']) {
-            return true;
+/**
+ * Launch headless browser
+ *
+ * @returns {Promise<any>} Instance of the browser
+ */
+export async function newPage(): Promise<any> {
+    if (browser) {
+        if (!page) {
+            page = await browser.newPage();
         }
-    })
-
-    console.log(createRoom);
-    if (createRoom) {
-          console.log(await roomService.createRoom({
-            emptyTimeout: 999999999,
-            name: process.env['LIVEKIT_ROOM']
-          }));
+        return page;
     }
 
-    // Generate a new token
-    const accessToken: any = new liveKitSDK.AccessToken(
-        process.env['LIVEKIT_KEY'],
-        process.env['LIVEKIT_SECRET'],
-        {
-            identity: "Car",
-            ttl: 60 * 60 * 7,
-        },
-    );
+    // Prepare args
+    const args: string[] = [
+        '--disable-setuid-sandbox',
+        '--no-sandbox',
+        '--enable-gpu',
+        '--use-fake-ui-for-media-stream',
+        '--autoplay-policy=no-user-gesture-required'
+    ]
+    if (asProcessArg('fake-devices')) {
+        args.push('--use-fake-device-for-media-stream')
+    }
 
-    // Set permissions
-    accessToken.addGrant({
-        roomCreate: false,
-        roomJoin: true,
-        roomList: false,
-        roomRecord: false,
-        roomAdmin: false,
-        room: process.env['LIVEKIT_ROOM'],
-        ingressAdmin: false,
-        canPublish: true,
-        canSubscribe: true,
-        canPublishData: true,
-        canUpdateOwnMetadata: true,
-        hidden: false,
-        recorder: false,
-        agent: false
+    // Launch the browser
+    browser = await puppeteer.launch({
+        executablePath: '/usr/bin/chromium',
+        args: args,
+        ignoreDefaultArgs: [
+            '--mute-audio',
+            '--hide-scrollbars'
+        ]
     });
 
-    token = await accessToken.toJwt();
-    tokenCreatedAt = Date.now();
+    // Allow permissions
+    const context: any = browser.defaultBrowserContext();
+    await context.overridePermissions(process.env['LIVEKIT_HTTP_URL'], ['microphone', 'camera']);
 
-    return token;
+    // Open new page
+    page = await browser.newPage();
+    return page;
+}
+
+/**
+ * Start the broadcast
+ *
+ * @returns {Promise<void>}
+ */
+export async function startBroadcast(): Promise<void> {
+    const page = await newPage();
+
+    page.on('console', async (msg: any): Promise<void> => {
+        const msgArgs = msg.args();
+        for (let i = 0; i < msgArgs.length; ++i) {
+            reportMessage(await msgArgs[i].jsonValue());
+        }
+    });
+
+    page.on('pageerror', async (error: string): Promise<void> => {
+        reportMessage(error, LogLevel.ERROR);
+    });
+
+    await page.goto(process.env['LIVEKIT_HTTP_URL'], { waitUntil: 'load' });
+
+    await page.exposeFunction('getToken', getToken);
+    await page.exposeFunction('asProcessArg', value => asProcessArg(value));
+    await page.exposeFunction('getEnvVariable', name => getEnvVariable(name));
+    await page.exposeFunction('sendData', data => updateRoomMetadata(data));
+
+    const script: string = fs.readFileSync(`${__dirname}/../libs/livekit-client.min.js`, 'utf8');
+    await page.addScriptTag({ content: script });
+
+    await page.evaluate(async (): Promise<void> => {
+        // Variables
+        let room = null;
+        const defaultDevices = await window.asProcessArg('default-devices');
+        const fakeDevices = await window.asProcessArg('fake-devices');
+        const noCamera = await window.asProcessArg('no-camera');
+        const tracks = {
+            video: null,
+            audio: null
+        };
+
+        // Create local video and audio tracks
+        async function createTracks() {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            const audioDevices = devices.filter(device => device.kind === 'audioinput');
+
+            const createVideoTrack = async (deviceId, width = 640, height = 360, maxBitrate = 400_000, priority = 'high') => {
+                if (!deviceId) {
+                    return null;
+                }
+
+                return await LivekitClient.createLocalVideoTrack({
+                    deviceId: deviceId,
+                    resolution: {
+                        width: width,
+                        height: height,
+                        encoding: {
+                            maxFramerate: 24,
+                            maxBitrate: maxBitrate,
+                            priority: priority,
+                        }
+                    }
+                });
+            }
+
+            const createAudioTrack = async (deviceId, channelCount = 1) => {
+                if (!deviceId) {
+                    return null;
+                }
+
+                return await LivekitClient.createLocalAudioTrack({
+                    deviceId: deviceId,
+                    autoGainControl: true,
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    channelCount: channelCount
+                });
+            }
+
+            if (videoDevices.length > 0 && !noCamera) {
+                tracks.video = await createVideoTrack(
+                    videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId
+                );
+            }
+
+            if (audioDevices.length > 0) {
+                tracks.audio = await createAudioTrack(
+                    audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId
+                );
+            }
+
+            try {
+                console.log('Connecting to LiveKit...');
+                setTimeout(startSession);
+            } catch {
+                console.log('Crash. Restarting...');
+                room = null
+                setTimeout(startSession);
+            }
+        }
+
+        // Connect to LiveKit room and publish tracks with datas
+        async function startSession() {
+            const token = await window.getToken();
+            const url = await window.getEnvVariable('LIVEKIT_WS_URL');
+
+            room = new LivekitClient.Room({
+                adaptiveStream: true,
+                dynacast: true,
+                reconnectPolicy: {
+                    nextRetryDelayInMs: (context) => {
+                        return 600;
+                    }
+                }
+            });
+
+            await room.prepareConnection(url, token);
+
+            room
+                .on(LivekitClient.RoomEvent.Connected, () => {
+                    console.log('Connected');
+                    sendData({});
+                })
+                .on(LivekitClient.RoomEvent.Reconnecting, () => {
+                    console.log('Reconnecting...');
+                })
+                .on(LivekitClient.RoomEvent.Reconnected, () => {
+                    console.log('Reconnected');
+                    sendData({});
+                })
+                .on(LivekitClient.RoomEvent.Disconnected, () => {
+                    console.log('Disconnected. Restarting...');
+                    room = null
+                    setTimeout(startSession);
+                });
+
+            await room.connect(url, token);
+
+            if (fakeDevices || defaultDevices) {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+
+                if (devices.filter(device => device.kind === 'videoinput').length > 0 && !noCamera) {
+                    await room.localParticipant.setCameraEnabled(true);
+                }
+
+                if (devices.filter(device => device.kind === 'audioinput').length > 0) {
+                    await room.localParticipant.setMicrophoneEnabled(true);
+                }
+            } else {
+                const publishVideoTrack = async (track, stream = 'main', maxBitrate = 400_000, priority = 'high') => {
+                    if (!track) {
+                        return;
+                    }
+
+                    await room.localParticipant.publishTrack(track, {
+                        name: `${stream}-video`,
+                        stream: stream,
+                        source: 'camera',
+                        simulcast: false,
+                        videoCodec: 'AV1',
+                        videoEncoding: {
+                            maxFramerate: 24,
+                            maxBitrate: maxBitrate,
+                            priority: priority
+                        }
+                    });
+                }
+
+                const publishAudioTrack = async (track, stream = 'main', maxBitrate = 12_000) => {
+                    if (!track) {
+                        return;
+                    }
+
+                    await room.localParticipant.publishTrack(track, {
+                        name: `${stream}-audio`,
+                        stream: stream,
+                        source: 'audio',
+                        simulcast: false,
+                        red: true,
+                        dtx: true,
+                        stopMicTrackOnMute: false,
+                        audioPreset: {
+                            maxBitrate: maxBitrate
+                        }
+                    });
+                }
+
+                if (!noCamera && tracks.video) {
+                    await publishVideoTrack(tracks.video);
+                }
+
+                if (tracks.audio) {
+                    await publishAudioTrack(tracks.audio);
+                }
+            }
+        }
+
+        if (fakeDevices || defaultDevices) {
+            console.log('Connecting to LiveKit...');
+            try {
+                setTimeout(startSession);
+            } catch {
+                console.log('Crash. Restarting...');
+                room = null
+                setTimeout(startSession);
+            }
+        } else {
+            console.log('Creating tracks...');
+            setTimeout(createTracks);
+        }
+    });
+}
+
+try {
+    setTimeout(startBroadcast);
+} catch {
+    reportMessage('An error occurred while starting the broadcast.', LogLevel.ERROR);
+    browser.close().then((): void => {
+        process.exit(1);
+    });
 }
