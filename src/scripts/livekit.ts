@@ -125,17 +125,10 @@ export async function startStream(): Promise<void> {
         let room = null;
         const defaultDevices = await asArg('default-devices');
         const fakeDevices = await asArg('fake-devices');
-        const oneCamera = await asArg('one-camera');
         const noCamera = await asArg('no-camera');
         const tracks = {
-            main: {
-                video: null,
-                audio: null
-            },
-            aux: {
-                video: null,
-                audio: null
-            }
+            video: null,
+            audio: null
         };
 
         // Send data to room
@@ -189,22 +182,16 @@ export async function startStream(): Promise<void> {
                 });
             }
 
-            if (videoDevices.length > 0 && !noCamera && !tracks.main.video) {
-                tracks.main.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId);
+            if (videoDevices.length > 0 && !noCamera) {
+                tracks.video = await createVideoTrack(
+                    videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId
+                );
             }
 
-            if (audioDevices.length > 0 && !tracks.main.audio) {
-                tracks.main.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId);
-            }
-
-            if (!oneCamera) {
-                if (videoDevices.length > 0 && !noCamera && !tracks.aux.video) {
-                    tracks.aux.video = await createVideoTrack(videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId, 352, 240, 200_000, 'low');
-                }
-
-                if (audioDevices.length > 0 && !tracks.aux.audio) {
-                    tracks.aux.audio = await createAudioTrack(audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId, 2);
-                }
+            if (audioDevices.length > 0) {
+                tracks.audio = await createAudioTrack(
+                    audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId
+                );
             }
 
             try {
@@ -306,16 +293,12 @@ export async function startStream(): Promise<void> {
                     });
                 }
 
-                if (!noCamera) {
-                    await publishVideoTrack(tracks.main.video);
+                if (!noCamera && tracks.video) {
+                    await publishVideoTrack(tracks.video);
                 }
-                await publishAudioTrack(tracks.main.audio);
 
-                if (!oneCamera) {
-                    if (!noCamera) {
-                        await publishVideoTrack(tracks.aux.video, 'aux', 200_000, 'low');
-                    }
-                    await publishAudioTrack(tracks.aux.audio, 'aux', 32_000);
+                if (tracks.audio) {
+                    await publishAudioTrack(tracks.audio);
                 }
             }
         }

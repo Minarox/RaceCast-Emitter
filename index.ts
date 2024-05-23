@@ -88,7 +88,7 @@ function launchSensor(): void {
  */
 function launchStream(): void {
     logMessage(`Launching Stream script...`, LogLevel.INFO);
-    processes.stream = fork(`${__dirname}/src/scripts/stream.${fileType}`, launchArgs);
+    processes.stream = fork(`${__dirname}/src/scripts/livekit.${fileType}`, launchArgs);
 
     // Fetch data
     processes.stream?.on('message', (data: any): void => {
