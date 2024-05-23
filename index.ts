@@ -4,6 +4,12 @@ import {logMessage} from "./src/utils";
 import {LogLevel, Processes} from "./src/types/global";
 import {fork} from 'child_process';
 
+// Check if the script is running as root
+if (!!(process.getuid && process.getuid() === 0) || !!(process.env['SUDO_UID'])) {
+    logMessage(`This script must not be run as root. Exiting...`, LogLevel.ERROR);
+    process.exit(1);
+}
+
 // Load environment variables from .env file
 dotenv.config();
 
