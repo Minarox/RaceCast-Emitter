@@ -1,8 +1,14 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
-import {logMessage, asProcessArg} from "./src/utils";
+import {logMessage} from "./src/utils";
 import {LogLevel, Processes} from "./src/types/global";
 import {fork} from 'child_process';
+
+// Check if the script is running as root
+if (!!(process.getuid && process.getuid() === 0) || !!(process.env['SUDO_UID'])) {
+    logMessage(`This script must not be run as root. Exiting...`, LogLevel.ERROR);
+    process.exit(1);
+}
 
 // Load environment variables from .env file
 dotenv.config();
@@ -17,9 +23,9 @@ const processes: Processes = {
     stream: null
 };
 
-if (asProcessArg("fake-devices")) {
-    launchArgs.push("fake-devices");
-}
+process.argv.slice(2).forEach((arg: string): void => {
+    launchArgs.push(arg);
+});
 
 /**
  * Launch and listen to sensor script
@@ -82,7 +88,7 @@ function launchSensor(): void {
  */
 function launchStream(): void {
     logMessage(`Launching Stream script...`, LogLevel.INFO);
-    processes.stream = fork(`${__dirname}/src/scripts/stream.${fileType}`, launchArgs);
+    processes.stream = fork(`${__dirname}/src/scripts/livekit.${fileType}`, launchArgs);
 
     // Fetch data
     processes.stream?.on('message', (data: any): void => {
