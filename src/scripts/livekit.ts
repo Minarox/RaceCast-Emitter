@@ -110,61 +110,57 @@ export async function startBroadcast(): Promise<void> {
         // Create local video and audio tracks
         async function createTracks() {
             const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(device => device.kind === 'videoinput');
-            const audioDevices = devices.filter(device => device.kind === 'audioinput');
 
-            const createVideoTrack = async (deviceId, width = 640, height = 360, maxBitrate = 400_000, priority = 'high') => {
-                if (!deviceId) {
-                    return null;
-                }
+            if (!noCamera && !tracks.video) {
+                const deviceId = devices
+                    .filter(device => device.kind === 'videoinput')
+                    .find(device => device.label.startsWith('Cam Link 4K'))
+                    ?.deviceId;
 
-                return await LivekitClient.createLocalVideoTrack({
-                    deviceId: deviceId,
-                    resolution: {
-                        width: width,
-                        height: height,
-                        encoding: {
-                            maxFramerate: 24,
-                            maxBitrate: maxBitrate,
-                            priority: priority,
+                if (deviceId) {
+                    tracks.video = await LivekitClient.createLocalVideoTrack({
+                        deviceId: deviceId,
+                        resolution: {
+                            width: 1920,
+                            height: 780,
+                            encoding: {
+                                maxFramerate: 30,
+                                maxBitrate: 6_000_000,
+                                priority: 'high',
+                            }
                         }
-                    }
-                });
-            }
-
-            const createAudioTrack = async (deviceId, channelCount = 1) => {
-                if (!deviceId) {
-                    return null;
+                    });
                 }
-
-                return await LivekitClient.createLocalAudioTrack({
-                    deviceId: deviceId,
-                    autoGainControl: true,
-                    echoCancellation: false,
-                    noiseSuppression: false,
-                    channelCount: channelCount
-                });
             }
 
-            if (videoDevices.length > 0 && !noCamera) {
-                tracks.video = await createVideoTrack(
-                    videoDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId
-                );
+            if (!tracks.audio) {
+                const deviceId = devices
+                    .filter(device => device.kind === 'audioinput')
+                    .find(device => device.label.startsWith('Cam Link 4K'))
+                    ?.deviceId;
+
+                if (deviceId) {
+                    tracks.audio = await LivekitClient.createLocalAudioTrack({
+                        deviceId: deviceId,
+                        autoGainControl: false,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        channelCount: 1
+                    });
+                }
             }
 
-            if (audioDevices.length > 0) {
-                tracks.audio = await createAudioTrack(
-                    audioDevices.find(device => device.label.startsWith('Cam Link 4K'))?.deviceId
-                );
-            }
-
-            try {
-                console.log('Connecting to LiveKit...');
-                setTimeout(startSession);
-            } catch {
-                console.log('Crash. Restarting...');
-                room = null
-                setTimeout(startSession);
+            if (!tracks.video || !tracks.audio) {
+                setTimeout(createTracks, 200);
+            } else {
+                try {
+                    console.log('Connecting to LiveKit...');
+                    setTimeout(startSession);
+                } catch {
+                    console.log('Crash. Restarting...');
+                    room = null
+                    setTimeout(startSession);
+                }
             }
         }
 
@@ -216,50 +212,34 @@ export async function startBroadcast(): Promise<void> {
                     await room.localParticipant.setMicrophoneEnabled(true);
                 }
             } else {
-                const publishVideoTrack = async (track, stream = 'main', maxBitrate = 400_000, priority = 'high') => {
-                    if (!track) {
-                        return;
-                    }
-
-                    await room.localParticipant.publishTrack(track, {
-                        name: `${stream}-video`,
-                        stream: stream,
+                if (tracks.video && !noCamera) {
+                    await room.localParticipant.publishTrack(tracks.video, {
+                        name: 'main-video',
+                        stream: 'main',
                         source: 'camera',
                         simulcast: false,
                         videoCodec: 'AV1',
                         videoEncoding: {
                             maxFramerate: 24,
-                            maxBitrate: maxBitrate,
-                            priority: priority
+                            maxBitrate: 400_000,
+                            priority: 'high'
                         }
                     });
                 }
 
-                const publishAudioTrack = async (track, stream = 'main', maxBitrate = 12_000) => {
-                    if (!track) {
-                        return;
-                    }
-
-                    await room.localParticipant.publishTrack(track, {
-                        name: `${stream}-audio`,
-                        stream: stream,
+                if (tracks.audio) {
+                    await room.localParticipant.publishTrack(tracks.audio, {
+                        name: 'main-audio',
+                        stream: 'main',
                         source: 'audio',
                         simulcast: false,
                         red: true,
                         dtx: true,
                         stopMicTrackOnMute: false,
                         audioPreset: {
-                            maxBitrate: maxBitrate
+                            maxBitrate: 16_000
                         }
                     });
-                }
-
-                if (!noCamera && tracks.video) {
-                    await publishVideoTrack(tracks.video);
-                }
-
-                if (tracks.audio) {
-                    await publishAudioTrack(tracks.audio);
                 }
             }
         }

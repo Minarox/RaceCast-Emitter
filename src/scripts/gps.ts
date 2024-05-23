@@ -44,10 +44,10 @@ async function setupGPS(): Promise<void> {
 async function getGPSDatas(): Promise<void> {
     // Get GPS data
     let gps: GPS | null = null;
-    const gpsResponse: string = (await executeAT(`AT+QGPSLOC=1`)).trim();
+    const gpsResponse: string = await executeAT(`AT+QGPSLOC=1`);
 
-    if (gpsResponse.startsWith("+QGPSLOC:")) {
-        const data: Array<string> = gpsResponse.split(":")[1].trim().split(",");
+    if (gpsResponse.trim().startsWith("+QGPSLOC:")) {
+        const data: Array<string> = gpsResponse.trim().split(":")[1].trim().split(",");
         gps = {
             latitude: parseFloat(data[1].slice(0, 2)) + parseFloat(data[1].slice(2)) / 60,
             longitude: parseFloat(data[3].slice(0, 3)) + parseFloat(data[3].slice(3)) / 60,
