@@ -20,7 +20,7 @@ let cleanupCalled: boolean = false;
 const processes: Processes = {
     modem: null,
     sensor: null,
-    stream: null
+    broadcast: null
 };
 
 process.argv.slice(2).forEach((arg: string): void => {
@@ -38,7 +38,7 @@ function launchModem(): void {
 
     // Fetch data
     processes.modem?.on('message', (data: any): void => {
-        processes.stream?.send(data);
+        processes.broadcast?.send(data);
     });
 
     // Restart if exit
@@ -65,7 +65,7 @@ function launchSensor(): void {
 
     // Fetch data
     processes.sensor?.on('message', (data: any): void => {
-        processes.stream?.send(data);
+        processes.broadcast?.send(data);
     });
 
     // Restart if exit
@@ -82,31 +82,31 @@ function launchSensor(): void {
 }
 
 /**
- * Launch and listen to stream script
+ * Launch and listen to broadcast script
  *
  * @returns {void}
  */
-function launchStream(): void {
-    logMessage(`Launching Stream script...`, LogLevel.INFO);
-    processes.stream = fork(`${__dirname}/src/scripts/livekit.${fileType}`, launchArgs);
+function launchBroadcast(): void {
+    logMessage(`Launching Broadcast script...`, LogLevel.INFO);
+    processes.broadcast = fork(`${__dirname}/src/scripts/broadcast.${fileType}`, launchArgs);
 
     // Fetch data
-    processes.stream?.on('message', (data: any): void => {
+    processes.broadcast?.on('message', (data: any): void => {
         const message: string = JSON.stringify(data) || '';
         if (message === '{"name":"DOMException"}') {
-            processes.stream?.kill();
+            processes.broadcast?.kill();
         }
         logMessage(message, LogLevel.DATA);
     });
 
     // Restart if exit
-    processes.stream?.on('exit', (reason: string): void => {
-        logMessage(`Stream script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
-        processes.stream = null;
+    processes.broadcast?.on('exit', (reason: string): void => {
+        logMessage(`Broadcast script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
+        processes.broadcast = null;
 
         setTimeout(() => {
             if (!cleanupCalled) {
-                launchStream();
+                launchBroadcast();
             }
         }, 1000);
     });
@@ -119,7 +119,7 @@ setup()
 
         launchModem();
         launchSensor();
-        launchStream();
+        launchBroadcast();
     });
 
 /**
