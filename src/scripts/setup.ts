@@ -1,4 +1,4 @@
-import {execute, executeAT, logMessage, wait} from "../utils";
+import {executeAT, logMessage, wait} from "../utils";
 import {LogLevel} from "../types";
 
 /**
@@ -7,10 +7,10 @@ import {LogLevel} from "../types";
  * @returns {Promise<void>}
  */
 async function setupAudio(): Promise<void> {
-    await execute('systemctl --user restart pulseaudio.service');
-    await execute('systemctl --user restart wireplumber.service');
-    await execute('systemctl --user restart pipewire.service');
-    await execute('systemctl --user restart pipewire-pulse.service');
+    //await execute('systemctl --user restart pulseaudio.service');
+    //await execute('systemctl --user restart wireplumber.service');
+    //await execute('systemctl --user restart pipewire.service');
+    //await execute('systemctl --user restart pipewire-pulse.service');
 }
 
 /**
@@ -56,7 +56,7 @@ export async function setup(): Promise<void> {
 
     try {
         await setupAudio();
-	    await setupModem();
+	await setupModem();
 
         logMessage(`Wait internet connection...`);
         wait(2000);

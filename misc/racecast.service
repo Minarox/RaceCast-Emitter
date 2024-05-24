@@ -1,0 +1,15 @@
+[Unit]
+Description=RaceCast project
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mathis/RaceCast-Emitter
+ExecStart=/usr/bin/npm start
+Restart=always
+User=mathis
+Group=mathis
+
+[Install]
+WantedBy=multi-user.target
