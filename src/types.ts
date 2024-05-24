@@ -16,7 +16,16 @@ export enum LogLevel {
  * Processes used by the program
  */
 export interface Processes {
-    modem: ChildProcess | null;
-    sensor: ChildProcess | null;
-    stream: ChildProcess | null;
+    gps: ChildProcess | null;
+    livekit: ChildProcess | null;
+}
+
+/**
+ * GPS data returned by the modem
+ */
+export interface GPS {
+    latitude: number;
+    longitude: number;
+    altitude: number;
+    speed: number;
 }

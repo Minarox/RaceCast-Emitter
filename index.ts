@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
-import {logMessage} from "./src/utils";
-import {LogLevel, Processes} from "./src/types/global";
+import {logMessage, executeAT} from "./src/utils";
+import {LogLevel, Processes} from "./src/types";
 import {fork} from 'child_process';
 
 // Check if the script is running as root
@@ -18,9 +18,8 @@ const fileType: string = process.env['NODE_ENV'] === 'production' ? 'js' : 'ts';
 const launchArgs: string[] = [];
 let cleanupCalled: boolean = false;
 const processes: Processes = {
-    modem: null,
-    sensor: null,
-    stream: null
+    gps: null,
+    livekit: null
 };
 
 process.argv.slice(2).forEach((arg: string): void => {
@@ -28,85 +27,55 @@ process.argv.slice(2).forEach((arg: string): void => {
 });
 
 /**
- * Launch and listen to sensor script
+ * Launch and listen to GPS script
  *
  * @returns {void}
  */
-function launchModem(): void {
-    logMessage(`Launching Modem script...`, LogLevel.INFO);
-    processes.modem = fork(`${__dirname}/src/scripts/modem.${fileType}`, launchArgs);
-
-    // Fetch data
-    processes.modem?.on('message', (data: any): void => {
-        processes.stream?.send(data);
-    });
+function launchGPS(): void {
+    logMessage(`Launching GPS script...`, LogLevel.INFO);
+    processes.gps = fork(`${__dirname}/src/scripts/gps.${fileType}`, launchArgs);
 
     // Restart if exit
-    processes.modem?.on('exit', (reason: string): void => {
-        logMessage(`Modem script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
-        processes.modem = null;
+    processes.gps?.on('exit', (reason: string): void => {
+        logMessage(`GPS script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
+        processes.gps = null;
 
-        setTimeout(() => {
+        setTimeout((): void => {
             if (!cleanupCalled) {
-                launchModem();
+                launchGPS();
             }
         }, 1000);
     });
 }
 
 /**
- * Launch and listen to sensor script
+ * Launch and listen to livekit script
  *
  * @returns {void}
  */
-function launchSensor(): void {
-    logMessage(`Launching Sensor script...`, LogLevel.INFO);
-    processes.sensor = fork(`${__dirname}/src/scripts/sensor.${fileType}`, launchArgs);
+function launchLiveKit(): void {
+    logMessage(`Launching LiveKit script...`, LogLevel.INFO);
+    processes.livekit = fork(`${__dirname}/src/scripts/livekit.${fileType}`, launchArgs);
 
     // Fetch data
-    processes.sensor?.on('message', (data: any): void => {
-        processes.stream?.send(data);
-    });
-
-    // Restart if exit
-    processes.sensor?.on('exit', (reason: string): void => {
-        logMessage(`Sensor script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
-        processes.sensor = null;
-
-        setTimeout(() => {
-            if (!cleanupCalled) {
-                launchSensor();
-            }
-        }, 1000);
-    });
-}
-
-/**
- * Launch and listen to stream script
- *
- * @returns {void}
- */
-function launchStream(): void {
-    logMessage(`Launching Stream script...`, LogLevel.INFO);
-    processes.stream = fork(`${__dirname}/src/scripts/livekit.${fileType}`, launchArgs);
-
-    // Fetch data
-    processes.stream?.on('message', (data: any): void => {
+    processes.livekit?.on('message', (data: any): void => {
         const message: string = JSON.stringify(data) || '';
-        if (message === '{"name":"DOMException"}') {
-            processes.stream?.kill();
+        if (message === '{"name":"DOMException"}' || message === '{"name":"un"}') {
+            processes.livekit?.kill();
         }
         logMessage(message, LogLevel.DATA);
     });
 
     // Restart if exit
-    processes.stream?.on('exit', (reason: string): void => {
-        logMessage(`Stream script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
-        processes.stream = null;
+    processes.livekit?.on('exit', async (reason: string): Promise<void> => {
+        logMessage(`LiveKit script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
+        processes.livekit = null;
+        // Disable GPS
+        await executeAT(`AT+QGPSEND`);
 
-        setTimeout(() => {
+        setTimeout((): void => {
             if (!cleanupCalled) {
-                launchStream();
+                launchLiveKit();
             }
         }, 1000);
     });
@@ -117,9 +86,8 @@ setup()
     .then(async (): Promise<void> => {
         logMessage(`Starting main program...`);
 
-        launchModem();
-        launchSensor();
-        launchStream();
+        launchGPS();
+        launchLiveKit();
     });
 
 /**
