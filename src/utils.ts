@@ -1,5 +1,12 @@
 import {exec, ExecException} from "node:child_process";
-import {LogLevel} from "./types/global";
+import {LogLevel} from "./types";
+import {dynamicImport} from "tsimportlib";
+
+// Variables
+let liveKitSDK: any;
+let token: string;
+let tokenCreatedAt: number;
+let updatingMetadata: boolean = false;
 
 /**
  * Log message to the console
@@ -57,6 +64,16 @@ export function wait(ms: number): void {
 }
 
 /**
+ * Value of the environnement variable
+ *
+ * @param name
+ * @returns {string | undefined} Value of the variable
+ */
+export function getEnvVariable(name: string): string | undefined {
+    return process.env[name];
+}
+
+/**
  * Check if process argument is present
  *
  * @param {string} argument - Argument to check
@@ -64,4 +81,102 @@ export function wait(ms: number): void {
  */
 export function asProcessArg(argument: string): boolean {
     return process.argv.slice(2).includes(argument);
+}
+
+/**
+ * Load LiveKit SDK
+ *
+ * @returns {Promise<void>}
+ */
+async function loadSDK(): Promise<void> {
+    if (!liveKitSDK) {
+        liveKitSDK = await dynamicImport('livekit-server-sdk', module) as typeof import('livekit-server-sdk');
+    }
+}
+
+/**
+ * Generate a token for LiveKit (valid for 6 hours)
+ *
+ * @returns {Promise<string>} Token
+ */
+export async function getToken(): Promise<string> {
+    if (token && tokenCreatedAt && (Date.now() - tokenCreatedAt) < 60 * 60 * 6 * 1000) {
+        return token;
+    }
+
+    // Load SDK
+    await loadSDK();
+
+    // Generate a new token
+    const accessToken: any = new liveKitSDK.AccessToken(
+        process.env['LIVEKIT_KEY'],
+        process.env['LIVEKIT_SECRET'],
+        {
+            identity: "Car",
+            ttl: 60 * 60 * 7,
+        },
+    );
+
+    // Set permissions
+    accessToken.addGrant({
+        roomCreate: false,
+        roomJoin: true,
+        roomList: false,
+        roomRecord: false,
+        roomAdmin: false,
+        room: process.env['LIVEKIT_ROOM'],
+        ingressAdmin: false,
+        canPublish: true,
+        canSubscribe: true,
+        canPublishData: true,
+        canUpdateOwnMetadata: true,
+        hidden: false,
+        recorder: false,
+        agent: false
+    });
+
+    token = await accessToken.toJwt();
+    tokenCreatedAt = Date.now();
+
+    return token;
+}
+
+/**
+ * Update room metadata
+ *
+ * @param {any} metadata - Metadata
+ * @returns {Promise<void>}
+ */
+export async function updateRoomMetadata(metadata: any): Promise<void> {
+    if (updatingMetadata) {
+        return;
+    }
+    updatingMetadata = true;
+
+    // Load SDK
+    await loadSDK();
+
+    // Create a new RoomService
+    const roomService = new liveKitSDK.RoomServiceClient(
+        process.env['LIVEKIT_HTTP_URL'],
+        process.env['LIVEKIT_KEY'],
+        process.env['LIVEKIT_SECRET']
+    );
+
+    // Fetch room
+    const room: any = (await roomService.listRooms())
+        .find((room: any): boolean => room.name === process.env['LIVEKIT_ROOM']);
+    const roomMetadata = room.metadata ? JSON.parse(room.metadata) : {};
+    metadata = { car: { ...metadata, last_update: Date.now() }};
+
+    // Update room metadata
+    await roomService.updateRoomMetadata(
+        process.env['LIVEKIT_ROOM'],
+        JSON.stringify({
+            ...roomMetadata,
+            ...metadata
+        })
+    );
+
+    updatingMetadata = false;
 }
