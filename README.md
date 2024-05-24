@@ -47,7 +47,7 @@ Javascript app for acquiring and transmitting data and media stream from the var
 ### Features
 
 - Init environment (reset linux services, setup GPS, etc.)
-- Read MPU6050 sensor and GPS datas
+- Fetch GPS datas
 - Connect and share GoPro stream and other datas throught LiveKit
 
 ### Tech Stack
@@ -56,7 +56,6 @@ Javascript app for acquiring and transmitting data and media stream from the var
 - [LiveKit](https://github.com/livekit/server-sdk-js)
 - [Puppeteer](https://pptr.dev/)
 - [Dotenv](https://github.com/motdotla/dotenv)
-- I2C [bus](https://github.com/fivdi/i2c-bus) and [mpu6050](https://github.com/emersion/node-i2c-mpu6050)
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
@@ -67,7 +66,6 @@ Javascript app for acquiring and transmitting data and media stream from the var
 This project is highly hardware / software dependant and as not been tested on other component expect mine :
 - Raspberry Pi 5 (with Ubuntu 22.04 and ModemManager deactivated)
 - Quectel EC25 Modem (preconfigured in ECM mode, with an "Orange" SIM card)
-- MPU6050
 - GoPro Hero 12 Black
 - Elgato CamLink 4K
 
