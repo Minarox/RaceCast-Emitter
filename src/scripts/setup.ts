@@ -61,11 +61,11 @@ export async function setup(): Promise<void> {
  */
 export async function clearSetup(): Promise<void> {
     logMessage(`Clear environment...`);
-    wait(1000);
 
     try {
         // Disable GPS
-        await executeAT(`AT+QGPSEND`);
+        executeAT(`AT+QGPSEND`);
+        wait(1000);
     } catch (error) {
         logMessage(`Error clearing environment:\n${error}`, LogLevel.ERROR);
     } finally {
