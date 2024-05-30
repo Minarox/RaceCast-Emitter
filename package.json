@@ -8,14 +8,14 @@
     "url": "https://minarox.fr/"
   },
   "bugs": {
-    "url": "https://github.com/RaceCast/Emitter/issues",
+    "url": "https://github.com/Minarox/RaceCast-Emitter/issues",
     "email": "contact@minarox.fr"
   },
-  "homepage": "https://github.com/RaceCast/Emitter#readme",
+  "homepage": "https://github.com/Minarox/RaceCast-Emitter#readme",
   "readme": "./README.md",
   "repository": {
     "type": "git",
-    "url": "https://github.com/RaceCast/Emitter.git"
+    "url": "https://github.com/Minarox/RaceCast-Emitter.git"
   },
   "main": "index.js",
   "scripts": {
