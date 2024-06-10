@@ -2,8 +2,7 @@ import {executeAT, logMessage, wait} from "../utils";
 import {LogLevel} from "../types";
 
 /**
- * Set modem settings for serial communication
- *
+ * @description Set modem settings for serial communication
  * @returns {Promise<void>}
  */
 async function setupModem(): Promise<void> {
@@ -19,8 +18,7 @@ async function setupModem(): Promise<void> {
 }
 
 /**
- * Loop until modem establish a connection to the network
- *
+ * @description Loop until modem establish a connection to the network
  * @returns {Promise<true>} True when the modem is connected
  */
 async function waitForConnection(): Promise<true> {
@@ -35,8 +33,7 @@ async function waitForConnection(): Promise<true> {
 }
 
 /**
- * Setup program environment
- *
+ * @description Setup program environment
  * @returns {Promise<void>}
  */
 export async function setup(): Promise<void> {
@@ -55,8 +52,7 @@ export async function setup(): Promise<void> {
 }
 
 /**
- * Clear program environment
- *
+ * @description Clear program environment
  * @returns {Promise<void>}
  */
 export async function clearSetup(): Promise<void> {

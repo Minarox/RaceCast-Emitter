@@ -1,8 +1,7 @@
 import {ChildProcess} from 'child_process';
 
 /**
- * Level of log message
- *
+ * @description Level of log message
  * @enum {string}
  */
 export enum LogLevel {
@@ -13,7 +12,7 @@ export enum LogLevel {
 }
 
 /**
- * Processes used by the program
+ * @description Processes used by the program
  */
 export interface Processes {
     gps: ChildProcess | null;
@@ -21,7 +20,7 @@ export interface Processes {
 }
 
 /**
- * GPS data returned by the modem
+ * @description GPS data returned by the modem
  */
 export interface GPS {
     latitude: number;

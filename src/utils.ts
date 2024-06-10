@@ -9,8 +9,7 @@ let tokenCreatedAt: number;
 let updatingMetadata: boolean = false;
 
 /**
- * Log message to the console
- *
+ * @description Log message to the console
  * @param {string} message - Message to log
  * @param {LogLevel} level - Level of log message
  * @returns {void}
@@ -22,8 +21,7 @@ export function logMessage(message: string, level: LogLevel = LogLevel.INFO): vo
 }
 
 /**
- * Execute command on the host
- *
+ * @description Execute command on the host
  * @param {string} command - Command to execute
  * @returns {Promise<string>} Result of the command
  */
@@ -39,8 +37,7 @@ export function execute(command: string): Promise<string> {
 }
 
 /**
- * Execute AT command and return response
- *
+ * @description Execute AT command and return response
  * @param {string} command - AT command to execute
  * @returns {Promise<string>} Modem response
  */
@@ -49,8 +46,7 @@ export function executeAT(command: string): Promise<string> {
 }
 
 /**
- * Wait a certain amount of time
- *
+ * @description Wait a certain amount of time
  * @params {number} ms - Time to wait in millisecond
  * @returns {void}
  */
@@ -64,8 +60,7 @@ export function wait(ms: number): void {
 }
 
 /**
- * Value of the environnement variable
- *
+ * @description Value of the environnement variable
  * @param name
  * @returns {string | undefined} Value of the variable
  */
@@ -74,8 +69,7 @@ export function getEnvVariable(name: string): string | undefined {
 }
 
 /**
- * Check if process argument is present
- *
+ * @description Check if process argument is present
  * @param {string} argument - Argument to check
  * @returns {boolean} - True if argument is present
  */
@@ -84,8 +78,31 @@ export function asProcessArg(argument: string): boolean {
 }
 
 /**
- * Load LiveKit SDK
- *
+ * @description Return a random integer between min (included) and max (included)
+ * @param {number} min - Minimum value
+ * @param {number} max - Maximum value
+ * @param {boolean} integer - Return an integer
+ * @returns {number} Random integer
+ */
+export function getRandomInt(min, max) {
+    min = Math.ceil(min);
+    max = Math.floor(max);
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/**
+ * @description Return a random float between min (included) and max (included)
+ * @param {number} min - Minimum value
+ * @param {number} max - Maximum value
+ * @param {number} precision - Precision of the float
+ * @returns {number} Random float
+ */
+export function getRandomFloat(min, max, precision = 2) {
+    return parseFloat((Math.random() * (max - min) + min).toFixed(precision));
+}
+
+/**
+ * @description Load LiveKit SDK
  * @returns {Promise<void>}
  */
 async function loadSDK(): Promise<void> {
@@ -95,8 +112,7 @@ async function loadSDK(): Promise<void> {
 }
 
 /**
- * Generate a token for LiveKit (valid for 6 hours)
- *
+ * @description Generate a token for LiveKit (valid for 6 hours)
  * @returns {Promise<string>} Token
  */
 export async function getToken(): Promise<string> {
@@ -142,8 +158,7 @@ export async function getToken(): Promise<string> {
 }
 
 /**
- * Update room metadata
- *
+ * @description Update room metadata
  * @param {any} metadata - Metadata
  * @returns {Promise<void>}
  */
@@ -167,14 +182,16 @@ export async function updateRoomMetadata(metadata: any): Promise<void> {
     const room: any = (await roomService.listRooms())
         .find((room: any): boolean => room.name === process.env['LIVEKIT_ROOM']);
     const roomMetadata = room.metadata ? JSON.parse(room.metadata) : {};
-    metadata = { car: { ...metadata, last_update: Date.now() }};
+    metadata = { ...metadata, last_update: Date.now() };
 
     // Update room metadata
     await roomService.updateRoomMetadata(
         process.env['LIVEKIT_ROOM'],
         JSON.stringify({
             ...roomMetadata,
-            ...metadata
+            car: {
+                ...metadata
+            }
         })
     );
 

@@ -27,8 +27,7 @@ process.argv.slice(2).forEach((arg: string): void => {
 });
 
 /**
- * Launch and listen to GPS script
- *
+ * @description Launch and listen to GPS script
  * @returns {void}
  */
 function launchGPS(): void {
@@ -49,8 +48,7 @@ function launchGPS(): void {
 }
 
 /**
- * Launch and listen to livekit script
- *
+ * @description Launch and listen to livekit script
  * @returns {void}
  */
 function launchLiveKit(): void {
@@ -60,7 +58,7 @@ function launchLiveKit(): void {
     // Fetch data
     processes.livekit?.on('message', (data: any): void => {
         const message: string = JSON.stringify(data) || '';
-        if (message === '{"name":"DOMException"}' || message === '{"name":"un"}') {
+        if (message === '{"name":"DOMException"}' || message === '{"name":"un"}' || message === '{"name":"TypeError"}') {
             processes.livekit?.kill();
         }
         logMessage(message, LogLevel.DATA);
@@ -91,8 +89,7 @@ setup()
     });
 
 /**
- * Cleanup the program before exit
- *
+ * @description Cleanup the program before exit
  * @returns {Promise<void>}
  */
 async function cleanUp(): Promise<void> {
