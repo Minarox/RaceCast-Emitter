@@ -6,10 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/mathis/RaceCast-Emitter
-ExecStart=/usr/bin/npm start
+ExecStart=/usr/bin/npm start fake-devices
 Restart=always
-User=mathis
-Group=mathis
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
