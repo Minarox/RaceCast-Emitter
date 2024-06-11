@@ -24,18 +24,15 @@
     "start": "NODE_ENV=production node dist/index.js"
   },
   "dependencies": {
+    "typescript": "^5.4.5",
     "dotenv": "^16.4.5",
-    "i2c-bus": "^5.2.3",
-    "i2c-mpu6050": "^2.3.0",
     "livekit-server-sdk": "^2.4.0",
-    "puppeteer-core": "^22.10.0"
+    "puppeteer-core": "^22.10.0",
+    "tsimportlib": "^0.0.5"
   },
   "devDependencies": {
-    "@types/i2c-bus": "^5.1.2",
     "@types/node": "^20.14.2",
     "ts-node": "^10.9.2",
-    "tsimportlib": "^0.0.5",
-    "typescript": "^5.4.5",
-    "node-gyp": "^10.1.0"
+    "nodemon": "^3.1.3"
   }
 }
