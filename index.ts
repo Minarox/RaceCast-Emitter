@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import {clearSetup, setup} from "./src/scripts/setup";
-import {logMessage, executeAT} from "./src/utils";
+import {logMessage, executeAT, asProcessArg} from "./src/utils";
 import {LogLevel, Processes} from "./src/types";
 import {fork} from 'child_process';
 
@@ -35,9 +35,12 @@ function launchGPS(): void {
     processes.gps = fork(`${__dirname}/src/scripts/gps.${fileType}`, launchArgs);
 
     // Restart if exit
-    processes.gps?.on('exit', (reason: string): void => {
+    processes.gps?.on('exit', async (reason: string): Promise<void> => {
         logMessage(`GPS script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.gps = null;
+
+        // Disable GPS
+        await executeAT(`AT+QGPSEND`);
 
         setTimeout((): void => {
             if (!cleanupCalled) {
@@ -65,11 +68,9 @@ function launchLiveKit(): void {
     });
 
     // Restart if exit
-    processes.livekit?.on('exit', async (reason: string): Promise<void> => {
+    processes.livekit?.on('exit', (reason: string): void => {
         logMessage(`LiveKit script exiting${reason ? ` :\n${reason}` : '.'}`, LogLevel.WARNING);
         processes.livekit = null;
-        // Disable GPS
-        await executeAT(`AT+QGPSEND`);
 
         setTimeout((): void => {
             if (!cleanupCalled) {
@@ -84,7 +85,9 @@ setup()
     .then(async (): Promise<void> => {
         logMessage(`Starting main program...`);
 
-        launchGPS();
+        if (!asProcessArg('no-gps')) {
+            launchGPS();
+        }
         launchLiveKit();
     });
 
