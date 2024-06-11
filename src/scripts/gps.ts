@@ -1,9 +1,8 @@
-import {executeAT, logMessage, updateRoomMetadata, wait} from "../utils";
+import {executeAT, logMessage, asProcessArg, getRandomInt, getRandomFloat, updateRoomMetadata, wait} from "../utils";
 import {LogLevel, GPS} from "../types";
 
 /**
- * Show / Send data to the parent process
- *
+ * @description Show / Send data to the parent process
  * @param {any} data - Data to send
  * @returns {void}
  */
@@ -16,13 +15,12 @@ function sendData(data: any): void {
 }
 
 /**
- * Setup GPS data format and enable GPS
- *
+ * @description Setup GPS data format and enable GPS
  * @returns {Promise<void>}
  */
 async function setupGPS(): Promise<void> {
-    const gpsState: string = await executeAT(`AT+QGPS?`);
-    if (gpsState.trim().startsWith("+QGPS: 0")) {
+    await executeAT(`ATE0`);
+    if ((await executeAT(`AT+QGPS?`)).trim().startsWith("+QGPS: 0")) {
         // Set data format and enable GPS
         await executeAT(`AT+QGPSCFG=\"nmeasrc\",1`);
         await executeAT(`AT+QGPS=1`);
@@ -37,8 +35,7 @@ async function setupGPS(): Promise<void> {
 }
 
 /**
- * Get network, signal and GPS data from the modem
- *
+ * @description Get network, signal and GPS data from the modem
  * @returns {Promise<void>}
  */
 async function getGPSDatas(): Promise<void> {
@@ -62,4 +59,17 @@ async function getGPSDatas(): Promise<void> {
     setTimeout(getGPSDatas, 500);
 }
 
-setTimeout(setupGPS);
+if (asProcessArg('fake-devices')) {
+    setInterval((): void => {
+        sendData({
+            gps: {
+                latitude: getRandomFloat(48.858, 48.859, 5),
+                longitude: getRandomFloat(2.294, 2.295, 5),
+                altitude: getRandomInt(0, 300),
+                speed: getRandomFloat(0, 120, 2),
+            }
+        });
+    }, 1000);
+} else {
+    setTimeout(setupGPS);
+}

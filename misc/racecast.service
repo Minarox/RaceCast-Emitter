@@ -8,8 +8,6 @@ Type=simple
 WorkingDirectory=/home/mathis/RaceCast-Emitter
 ExecStart=/usr/bin/npm start
 Restart=always
-User=mathis
-Group=mathis
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
