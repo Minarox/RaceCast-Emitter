@@ -136,7 +136,8 @@ export async function startBroadcast(): Promise<void> {
                                 degradationPreference: 'maintain-framerate',
                                 videoEncoding: {
                                     maxFramerate: 30,
-                                    maxBitrate: 1_500_000,
+                                    maxBitrate: device.label.startsWith("Cam Link 4K") ? 1_000_000 : 500_000,
+                                    priority: device.label.startsWith("Cam Link 4K") ? "low" : "very-low"
                                 }
                             }
                         );
@@ -155,7 +156,7 @@ export async function startBroadcast(): Promise<void> {
                                 dtx: true,
                                 stopMicTrackOnMute: false,
                                 audioPreset: {
-                                    maxBitrate: 40_000
+                                    maxBitrate: 28_000
                                 }
                             }
                         );
