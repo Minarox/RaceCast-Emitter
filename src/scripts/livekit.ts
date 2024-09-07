@@ -201,12 +201,12 @@ export async function startBroadcast(): Promise<void> {
                     sendData({});
                     await checkTracks();
                 })
-                .on(LivekitClient.RoomEvent.Reconnecting, () => {
+                .on(LivekitClient.RoomEvent.Reconnecting, async () => {
                     console.log('Reconnecting...');
                     await removeTracks(devicesBuffer);
                     devicesBuffer = [];
                 })
-                .on(LivekitClient.RoomEvent.Reconnected, () => {
+                .on(LivekitClient.RoomEvent.Reconnected, async () => {
                     console.log('Reconnected');
                     sendData({});
                     await checkTracks();
