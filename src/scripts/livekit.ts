@@ -126,6 +126,7 @@ export async function startBroadcast(): Promise<void> {
                     }
 
                     if (device.kind === 'videoinput') {
+                        console.log(`Add video track: ${device.label}`);
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalVideoTrack({
                                 deviceId: device.deviceId
@@ -142,6 +143,7 @@ export async function startBroadcast(): Promise<void> {
                             }
                         );
                     } else if (device.kind === 'audioinput') {
+                        console.log(`Add audio track: ${device.label}`);
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalAudioTrack({
                                 deviceId: device.deviceId,
@@ -188,9 +190,8 @@ export async function startBroadcast(): Promise<void> {
                     !devices.some(currentDevice => currentDevice.deviceId === previousDevice.deviceId)
                 );
 
-                console.log(JSON.stringify(addedDevices))
-                //await removeTracks(removedDevices);
-                //await createTracks(addedDevices);
+                await removeTracks(removedDevices);
+                await createTracks(addedDevices);
                 devicesBuffer = devices;
             }
 
@@ -202,10 +203,13 @@ export async function startBroadcast(): Promise<void> {
                 })
                 .on(LivekitClient.RoomEvent.Reconnecting, () => {
                     console.log('Reconnecting...');
+                    await removeTracks(devicesBuffer);
+                    devicesBuffer = [];
                 })
                 .on(LivekitClient.RoomEvent.Reconnected, () => {
                     console.log('Reconnected');
                     sendData({});
+                    await checkTracks();
                 })
                 .on(LivekitClient.RoomEvent.Disconnected, async () => {
                     console.log('Disconnected. Restarting...');
