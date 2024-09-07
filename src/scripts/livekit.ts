@@ -142,12 +142,12 @@ export async function startBroadcast(): Promise<void> {
                                 }
                             }
                         );
-                    } else if (device.kind === 'audioinput') {
+                    } else if (device.kind === 'audioinput' && device.label.startsWith("Cam Link 4K")) {
                         console.log(`Add audio track: ${device.label}`);
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalAudioTrack({
                                 deviceId: device.deviceId,
-                                autoGainControl: true,
+                                autoGainControl: false,
                                 echoCancellation: false,
                                 noiseSuppression: false
                             }),
