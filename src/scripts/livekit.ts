@@ -137,7 +137,7 @@ export async function startBroadcast(): Promise<void> {
                                 //degradationPreference: 'maintain-framerate',
                                 videoEncoding: {
                                     maxFramerate: 25,
-                                    maxBitrate: device.label.startsWith("Cam Link 4K") ? 400_000 : 200_000,
+                                    maxBitrate: device.label.startsWith("Cam Link 4K") ? 400_000 : 100_000,
                                     priority: device.label.startsWith("Cam Link 4K") ? "low" : "very-low"
                                 }
                             }
@@ -198,25 +198,25 @@ export async function startBroadcast(): Promise<void> {
             room
                 .on(LivekitClient.RoomEvent.Connected, async () => {
                     console.log('Connected');
-                    sendData({});
-                    await checkTracks();
+                    //sendData({});
+                    //await checkTracks();
                 })
                 .on(LivekitClient.RoomEvent.Reconnecting, async () => {
                     console.log('Reconnecting...');
-                    await removeTracks(devicesBuffer);
-                    devicesBuffer = [];
+                    //await removeTracks(devicesBuffer);
+                    //devicesBuffer = [];
                 })
                 .on(LivekitClient.RoomEvent.Reconnected, async () => {
                     console.log('Reconnected');
-                    sendData({});
-                    await checkTracks();
+                    //sendData({});
+                    //await checkTracks();
                 })
                 .on(LivekitClient.RoomEvent.Disconnected, async () => {
                     console.log('Disconnected. Restarting...');
-                    await removeTracks(devicesBuffer);
-                    devicesBuffer = [];
-                    room = null;
-                    setTimeout(startLiveKit);
+                    //await removeTracks(devicesBuffer);
+                    //devicesBuffer = [];
+                    //room = null;
+                    //setTimeout(startLiveKit);
                 })
                 .on(LivekitClient.RoomEvent.MediaDevicesChanged, async () => {
                     console.log('Media devices changed');
@@ -228,6 +228,8 @@ export async function startBroadcast(): Promise<void> {
                 });
 
             await room.connect(url, token);
+            sendData({});
+            await checkTracks();
         }
 
         console.log('Starting LiveKit...');
