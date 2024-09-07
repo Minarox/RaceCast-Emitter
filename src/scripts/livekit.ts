@@ -105,11 +105,9 @@ export async function startBroadcast(): Promise<void> {
             const url = await window.getEnvVariable('LIVEKIT_WS_URL');
 
             room = new LivekitClient.Room({
-                adaptiveStream: false,
-                dynacast: false,
                 reconnectPolicy: {
                     nextRetryDelayInMs: (context) => {
-                        return 600;
+                        return 1000;
                     }
                 }
             });
@@ -142,12 +140,12 @@ export async function startBroadcast(): Promise<void> {
                                 }
                             }
                         );
-                    } else if (device.kind === 'audioinput' && device.label.startsWith("Cam Link 4K")) {
+                    } else if (device.kind === 'audioinput') {
                         console.log(`Add audio track: ${device.label}`);
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalAudioTrack({
                                 deviceId: device.deviceId,
-                                autoGainControl: false,
+                                autoGainControl: true,
                                 echoCancellation: false,
                                 noiseSuppression: false
                             }),
@@ -220,11 +218,11 @@ export async function startBroadcast(): Promise<void> {
                 })
                 .on(LivekitClient.RoomEvent.MediaDevicesChanged, async () => {
                     console.log('Media devices changed');
-                    await checkTracks();
+                    //await checkTracks();
                 })
                 .on(LivekitClient.RoomEvent.MediaDevicesError, async () => {
                     console.log('Media devices error');
-                    await checkTracks();
+                    //await checkTracks();
                 });
 
             await room.connect(url, token);
