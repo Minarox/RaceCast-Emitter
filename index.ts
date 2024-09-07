@@ -1,5 +1,4 @@
 import dotenv from 'dotenv';
-import {clearSetup, setup} from "./src/scripts/setup";
 import {logMessage, executeAT, asProcessArg} from "./src/utils";
 import {LogLevel, Processes} from "./src/types";
 import {fork} from 'child_process';
@@ -60,11 +59,7 @@ function launchLiveKit(): void {
 
     // Fetch data
     processes.livekit?.on('message', (data: any): void => {
-        const message: string = JSON.stringify(data) || '';
-        if (message === '{"name":"DOMException"}' || message === '{"name":"un"}' || message === '{"name":"TypeError"}') {
-            processes.livekit?.kill();
-        }
-        logMessage(message, LogLevel.DATA);
+        logMessage(JSON.stringify(data) || '', LogLevel.DATA);
     });
 
     // Restart if exit
@@ -81,15 +76,11 @@ function launchLiveKit(): void {
 }
 
 // Setup environment and run scripts
-setup()
-    .then(async (): Promise<void> => {
-        logMessage(`Starting main program...`);
-
-        if (!asProcessArg('no-gps')) {
-            launchGPS();
-        }
-        launchLiveKit();
-    });
+logMessage(`Starting main program...`);
+if (!asProcessArg('no-gps')) {
+    launchGPS();
+}
+launchLiveKit();
 
 /**
  * @description Cleanup the program before exit
@@ -107,9 +98,6 @@ async function cleanUp(): Promise<void> {
             await processes[key].kill();
         }
     }
-
-    // Clear environment
-    await clearSetup();
 
     process.exit();
 }

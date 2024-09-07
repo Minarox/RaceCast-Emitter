@@ -105,8 +105,8 @@ export async function startBroadcast(): Promise<void> {
             const url = await window.getEnvVariable('LIVEKIT_WS_URL');
 
             room = new LivekitClient.Room({
-                adaptiveStream: true,
-                dynacast: true,
+                adaptiveStream: false,
+                dynacast: false,
                 reconnectPolicy: {
                     nextRetryDelayInMs: (context) => {
                         return 600;
@@ -121,7 +121,7 @@ export async function startBroadcast(): Promise<void> {
                 devices.forEach(async (device) => {
                     const publishTrackOptions = {
                         name: device.label,
-                        stream: device.groupId,
+                        //stream: device.groupId,
                         simulcast: false
                     }
 
@@ -133,10 +133,10 @@ export async function startBroadcast(): Promise<void> {
                             {
                                 ...publishTrackOptions,
                                 source: LivekitClient.Track.Source.Camera,
-                                degradationPreference: 'maintain-framerate',
+                                //degradationPreference: 'maintain-framerate',
                                 videoEncoding: {
-                                    maxFramerate: 30,
-                                    maxBitrate: device.label.startsWith("Cam Link 4K") ? 1_000_000 : 500_000,
+                                    maxFramerate: 25,
+                                    maxBitrate: device.label.startsWith("Cam Link 4K") ? 400_000 : 200_000,
                                     priority: device.label.startsWith("Cam Link 4K") ? "low" : "very-low"
                                 }
                             }
@@ -145,7 +145,7 @@ export async function startBroadcast(): Promise<void> {
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalAudioTrack({
                                 deviceId: device.deviceId,
-                                autoGainControl: false,
+                                autoGainControl: true,
                                 echoCancellation: false,
                                 noiseSuppression: false
                             }),
@@ -188,8 +188,9 @@ export async function startBroadcast(): Promise<void> {
                     !devices.some(currentDevice => currentDevice.deviceId === previousDevice.deviceId)
                 );
 
-                await removeTracks(removedDevices);
-                await createTracks(addedDevices);
+                console.log(JSON.stringify(addedDevices))
+                //await removeTracks(removedDevices);
+                //await createTracks(addedDevices);
                 devicesBuffer = devices;
             }
 
