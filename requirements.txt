@@ -4,12 +4,15 @@ aiosignal==1.3.1
 attrs==24.2.0
 frozenlist==1.4.1
 idna==3.10
+linuxpy==0.16.0
 livekit==0.16.3
 livekit-api==0.7.0
 livekit-protocol==0.6.0
 multidict==6.1.0
+numpy==2.1.1
 protobuf==5.28.2
 PyJWT==2.9.0
 python-dotenv==1.0.1
 types-protobuf==4.25.0.20240417
+typing_extensions==4.12.2
 yarl==1.11.1
