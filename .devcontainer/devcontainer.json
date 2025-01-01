@@ -1,0 +1,28 @@
+{
+    "name": "Bun",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            "VERSION": "1.1.39"
+        }
+    },
+    "remoteUser": "bun",
+    "postStartCommand": "bun install && bun run dev",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "aaron-bond.better-comments",
+                "mk12.better-git-line-blame",
+                "Codeium.codeium",
+                "vivaxy.vscode-conventional-commits",
+                "cweijan.vscode-database-client2",
+                "ms-vscode-remote.remote-containers",
+                "ms-azuretools.vscode-docker",
+                "usernamehw.errorlens",
+                "github.vscode-github-actions",
+                "ecmel.vscode-html-css",
+                "AykutSarac.jsoncrack-vscode"
+            ]
+        }
+    }
+}

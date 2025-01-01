@@ -1,8 +1,8 @@
 // @ts-nocheck
-import puppeteer from 'puppeteer-core';
 import fs from 'fs';
-import {logMessage, getEnvVariable, asProcessArg, getToken, updateRoomMetadata} from '../utils';
-import {LogLevel} from '../types';
+import puppeteer from 'puppeteer-core';
+import { LogLevel } from '../types';
+import { asProcessArg, getEnvVariable, getToken, logMessage, updateRoomMetadata } from '../utils';
 
 // Variables
 let browser: any = null;
@@ -40,7 +40,10 @@ export async function newPage(): Promise<any> {
         '--no-sandbox',
         '--enable-gpu',
         '--use-fake-ui-for-media-stream',
-        '--autoplay-policy=no-user-gesture-required'
+        '--autoplay-policy=no-user-gesture-required',
+        '--use-gl=angle',
+        '--use-angle=gl',
+        '--enable-unsafe-webgpu'
     ]
     if (asProcessArg('fake-devices')) {
         args.push('--use-fake-device-for-media-stream')
@@ -105,11 +108,9 @@ export async function startBroadcast(): Promise<void> {
             const url = await window.getEnvVariable('LIVEKIT_WS_URL');
 
             room = new LivekitClient.Room({
-                adaptiveStream: true,
-                dynacast: true,
                 reconnectPolicy: {
                     nextRetryDelayInMs: (context) => {
-                        return 600;
+                        return 1000;
                     }
                 }
             });
@@ -121,11 +122,12 @@ export async function startBroadcast(): Promise<void> {
                 devices.forEach(async (device) => {
                     const publishTrackOptions = {
                         name: device.label,
-                        stream: device.groupId,
+                        //stream: device.groupId,
                         simulcast: false
                     }
 
                     if (device.kind === 'videoinput') {
+                        console.log(`Add video track: ${device.label}`);
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalVideoTrack({
                                 deviceId: device.deviceId
@@ -134,18 +136,20 @@ export async function startBroadcast(): Promise<void> {
                                 ...publishTrackOptions,
                                 source: LivekitClient.Track.Source.Camera,
                                 degradationPreference: 'maintain-framerate',
+                                videoCodec: 'AV1',
                                 videoEncoding: {
                                     maxFramerate: 30,
-                                    maxBitrate: device.label.startsWith("Cam Link 4K") ? 1_000_000 : 500_000,
-                                    priority: device.label.startsWith("Cam Link 4K") ? "low" : "very-low"
+                                    maxBitrate: device.label.startsWith("Cam Link 4K") ? 500_000 : 120_000,
+                                    priority: device.label.startsWith("Cam Link 4K") ? "high" : "low"
                                 }
                             }
                         );
                     } else if (device.kind === 'audioinput') {
+                        console.log(`Add audio track: ${device.label}`);
                         await room.localParticipant.publishTrack(
                             await LivekitClient.createLocalAudioTrack({
                                 deviceId: device.deviceId,
-                                autoGainControl: false,
+                                autoGainControl: true,
                                 echoCancellation: false,
                                 noiseSuppression: false
                             }),
@@ -196,33 +200,38 @@ export async function startBroadcast(): Promise<void> {
             room
                 .on(LivekitClient.RoomEvent.Connected, async () => {
                     console.log('Connected');
-                    sendData({});
-                    await checkTracks();
+                    //sendData({});
+                    //await checkTracks();
                 })
-                .on(LivekitClient.RoomEvent.Reconnecting, () => {
+                .on(LivekitClient.RoomEvent.Reconnecting, async () => {
                     console.log('Reconnecting...');
+                    //await removeTracks(devicesBuffer);
+                    //devicesBuffer = [];
                 })
-                .on(LivekitClient.RoomEvent.Reconnected, () => {
+                .on(LivekitClient.RoomEvent.Reconnected, async () => {
                     console.log('Reconnected');
-                    sendData({});
+                    //sendData({});
+                    //await checkTracks();
                 })
                 .on(LivekitClient.RoomEvent.Disconnected, async () => {
                     console.log('Disconnected. Restarting...');
-                    await removeTracks(devicesBuffer);
-                    devicesBuffer = [];
-                    room = null;
-                    setTimeout(startLiveKit);
+                    //await removeTracks(devicesBuffer);
+                    //devicesBuffer = [];
+                    //room = null;
+                    //setTimeout(startLiveKit);
                 })
                 .on(LivekitClient.RoomEvent.MediaDevicesChanged, async () => {
                     console.log('Media devices changed');
-                    await checkTracks();
+                    //await checkTracks();
                 })
                 .on(LivekitClient.RoomEvent.MediaDevicesError, async () => {
                     console.log('Media devices error');
-                    await checkTracks();
+                    //await checkTracks();
                 });
 
             await room.connect(url, token);
+            sendData({});
+            await checkTracks();
         }
 
         console.log('Starting LiveKit...');

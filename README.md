@@ -32,7 +32,6 @@
     <li>
       <a href="#getting-started">Getting Started</a>
       <ul>
-        <li><a href="#prerequisites">Prerequisites</a></li>
         <li><a href="#deploy-on-embedded-system">Deploy on embedded system</a></li>
       </ul>
     </li>
@@ -46,61 +45,59 @@ Javascript app for acquiring and transmitting data and media stream from the var
 
 ### Features
 
-- Init environment (reset linux services, setup GPS, etc.)
-- Fetch GPS datas
-- Connect and share GoPro stream and other datas throught LiveKit
+- Fetch and parse modem datas (Network, GPS)
+- Stream multiple media stream (audio and video) in realtime
 
 ### Tech Stack
 
+- [Bun](https://bun.sh/)
 - [TypeScript](https://www.typescriptlang.org/)
 - [LiveKit](https://github.com/livekit/server-sdk-js)
 - [Puppeteer](https://pptr.dev/)
-- [Dotenv](https://github.com/motdotla/dotenv)
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
 ## Getting Started
 
-### Prerequisites
-
 This project is highly hardware / software dependant and as not been tested on other component expect mine :
-- Raspberry Pi 5 (with Ubuntu 22.04 and ModemManager deactivated)
-- Quectel EC25 Modem (preconfigured in ECM mode, with an "Orange" SIM card)
+
+- Raspberry Pi 5 (with Raspberry Pi OS)
+- Quectel EC25 Modem (preconfigured in QMI mode, with an "Orange" SIM card)
 - GoPro Hero 12 Black
 - Elgato CamLink 4K
-
-The current user need to be added to the "dialout" group to allow communication with the modem's serial ports without `sudo` :
-```bash
-sudo gpasswd -a username dialout
-```
 
 ### Deploy on embedded system
 
 1. Clone the project and install dependencies :
+
 ```bash
-git clone https://github.com/RaceCast/Emitter
-cd Emitter
-npm i
+git clone https://github.com/Minarox/RaceCast-Emitter
+cd RaceCast-Emitter
+bun install
 ```
 
 2. Create `.env` file at the root of the project with these variables:
+
 ```dotenv
-LIVEKIT_WS_URL="wss://example.com"
-LIVEKIT_HTTP_URL="https://example.com"
+LIVEKIT_TLS="true"
+LIVEKIT_DOMAIN="example.com"
 LIVEKIT_KEY="key"
 LIVEKIT_SECRET="secret"
 LIVEKIT_ROOM="room"
 ```
 
 3. Build TypeScript files :
+
 ```bash
-npm run build
+bun run build
 ```
 
 4. Run the app :
+
 ```bash
-npm start
+bun run start
 ```
+
 The app automaticaly setting up environment and start needed scripts.
 
 <p align="right">(<a href="#top">back to top</a>)</p>

@@ -1,14 +1,5 @@
 version: 2
 updates:
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      time: "09:00"
-      timezone: "Europe/Paris"
-    labels:
-      - "dependencie"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -16,4 +7,4 @@ updates:
       time: "09:00"
       timezone: "Europe/Paris"
     labels:
-      - "dependencie"
+      - "dependencies"
