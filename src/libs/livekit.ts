@@ -1,7 +1,7 @@
 import * as LiveKit from 'livekit-server-sdk';
 
-export const TLS = process.env.LIVEKIT_TLS === 'true';
-export const HTTP_URL = `http${TLS ? 's' : ''}://${process.env.LIVEKIT_DOMAIN}`;
+export const TLS = process.env['LIVEKIT_TLS'] === 'true';
+export const HTTP_URL = `http${TLS ? 's' : ''}://${process.env['LIVEKIT_DOMAIN']}`;
 
 let token: string;
 let tokenCreatedAt: number;
@@ -60,7 +60,7 @@ export async function updateRoomMetadata(metadata: any): Promise<void> {
 
     // Update room metadata
     await roomService.updateRoomMetadata(
-        process.env['LIVEKIT_ROOM'],
+        process.env['LIVEKIT_ROOM'] as string,
         JSON.stringify({
             ...roomMetadata,
             car: {

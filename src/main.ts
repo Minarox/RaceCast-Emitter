@@ -70,7 +70,7 @@ async function updateEmitterInfo(): Promise<void> {
 }
 
 logger.debug(`TLS: ${TLS ? colors.green('enabled') : colors.red('disabled')}`);
-logger.debug(`Domain: ${process.env.LIVEKIT_DOMAIN}`);
+logger.debug(`Domain: ${process.env['LIVEKIT_DOMAIN']}`);
 logger.debug(`Modem ID: ${MODEM_ID}`);
 
 await $`mmcli -m ${MODEM_ID} --location-enable-gps-raw --location-enable-gps-nmea`.quiet();
@@ -81,7 +81,7 @@ logger.info('Starting browser...');
 
 (async () => {
     browser = await puppeteer.launch({
-        dumpio: process.env.LOG_LEVEL === 'debug',
+        dumpio: process.env['LOG_LEVEL'] === 'debug',
         executablePath: "/usr/bin/chromium",
         headless: true,
         ignoreDefaultArgs: true,

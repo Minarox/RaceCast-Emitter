@@ -18,8 +18,8 @@ const fileFormat = format.printf(({ level, message }): string => {
 })
 
 export const logger = createLogger({
-    level: process.env.LOG_LEVEL || "info",
-    silent: process.env.NODE_ENV === "test",
+    level: process.env['LOG_LEVEL'] || "info",
+    silent: process.env['NODE_ENV'] === "test",
     transports: [
         new transports.Console({
             format: consoleFormat
