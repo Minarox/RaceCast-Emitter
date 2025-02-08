@@ -56,17 +56,19 @@ export async function updateRoomMetadata(metadata: any): Promise<void> {
     // Fetch room
     const room: any = (await roomService.listRooms())
         .find((room: any): boolean => room.name === process.env['LIVEKIT_ROOM']);
-    const roomMetadata = room.metadata ? JSON.parse(room.metadata) : {};
-
-    // Update room metadata
-    await roomService.updateRoomMetadata(
-        process.env['LIVEKIT_ROOM'] as string,
-        JSON.stringify({
-            ...roomMetadata,
-            car: {
-                ...metadata,
-                last_update: Date.now()
-            }
-        })
-    );
+    if (room) {
+        const roomMetadata = room?.metadata ? JSON.parse(room.metadata) : {};
+    
+        // Update room metadata
+        await roomService.updateRoomMetadata(
+            process.env['LIVEKIT_ROOM'] as string,
+            JSON.stringify({
+                ...roomMetadata,
+                car: {
+                    ...metadata,
+                    last_update: Date.now()
+                }
+            })
+        );
+    }
 }

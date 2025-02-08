@@ -73,8 +73,8 @@ logger.debug(`TLS: ${TLS ? colors.green('enabled') : colors.red('disabled')}`);
 logger.debug(`Domain: ${process.env['LIVEKIT_DOMAIN']}`);
 logger.debug(`Modem ID: ${MODEM_ID}`);
 
-await $`mmcli -m ${MODEM_ID} --location-enable-gps-raw --location-enable-gps-nmea`.quiet();
-setInterval(async () => await updateEmitterInfo, 1000);
+await $`mmcli -m ${MODEM_ID} --enable --location-enable-gps-raw --location-enable-gps-nmea`.quiet();
+setInterval(async () => await updateEmitterInfo(), 1000);
 
 logger.debug("------------------");
 logger.info('Starting browser...');

@@ -1,6 +1,6 @@
 {
   "name": "racecast-emitter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Onboard autonomous IoT project to capture and transmit data and media stream from the race car.",
   "author": {
     "name": "Mathis Serrieres Maniecki",
@@ -26,14 +26,14 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@types/bun": "^1.1.14"
+    "@types/bun": "^1.2.2"
   },
   "peerDependencies": {
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.3"
   },
   "dependencies": {
     "colors": "^1.4.0",
-    "livekit-server-sdk": "^2.9.4",
+    "livekit-server-sdk": "^2.9.7",
     "puppeteer-core": "^23.11.1",
     "winston": "^3.17.0"
   }
