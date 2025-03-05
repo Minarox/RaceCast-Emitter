@@ -4,16 +4,14 @@ updates:
       directory: "/"
       schedule:
         interval: "monthly"
-        time: "09:00"
         timezone: "Europe/Paris"
       labels:
-      - "dependencies"
+      - "dependencie"
 
     - package-ecosystem: "npm"
       directory: "/"
       schedule:
         interval: "monthly"
-        time: "09:00"
         timezone: "Europe/Paris"
       labels:
-      - "dependencies"
+      - "dependencie"
