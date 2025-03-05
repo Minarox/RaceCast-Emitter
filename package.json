@@ -23,7 +23,7 @@
     "start": "nodemon --delay 5 -- --env-file=.env src/main.ts"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.2",
+    "@types/bun": "^1.2.4",
     "@types/i2c-bus": "^5.1.2",
     "nodemon": "^3.1.9"
   },
@@ -31,9 +31,9 @@
     "colors": "^1.4.0",
     "i2c-bus": "^5.2.3",
     "i2c-mpu6050": "^2.3.0",
-    "livekit-server-sdk": "^2.10.1",
+    "livekit-server-sdk": "^2.10.2",
     "puppeteer-core": "^23.11.1",
-    "typescript": "^5.7.3",
+    "typescript": "^5.8.2",
     "winston": "^3.17.0"
   },
   "engines": {

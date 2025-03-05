@@ -19,14 +19,19 @@ jobs:
             - name: Checkout project
               uses: actions/checkout@v4
 
+            - name: Install pnpm
+              uses: pnpm/action-setup@v4
+              with:
+                version: 10
+
             - name: Setup Node
               uses: actions/setup-node@v4
               with:
                 node-version: 20
-                cache: npm
+                cache: pnpm
 
             - name: Install dependencies
-              run: npm ci
+              run: pnpm install
 
     check:
         name: Check
@@ -35,7 +40,7 @@ jobs:
 
         steps:
             - name: Check types
-              run: npm run check
+              run: pnpm run check
 
     build:
         name: Build
@@ -44,4 +49,4 @@ jobs:
 
         steps:
             - name: Build project
-              run: npm run build
+              run: pnpm run build
