@@ -11,6 +11,7 @@ declare global {
             LIVEKIT_SECRET: string;
             LIVEKIT_ROOM: string;
             LOG_LEVEL: 'verbose' | 'debug' | 'info' | 'warn' | 'error';
+            CHROME_PATH: string;
         }
     }
 
