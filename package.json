@@ -25,8 +25,8 @@
         "start": "nodemon --delay 5 -- --env-file=.env src/main.ts"
     },
     "devDependencies": {
-        "@types/bun": "^1.2.4",
         "@types/i2c-bus": "^5.1.2",
+        "@types/node": "^22.13.9",
         "nodemon": "^3.1.9"
     },
     "dependencies": {

@@ -38,6 +38,9 @@ importers:
       '@types/i2c-bus':
         specifier: ^5.1.2
         version: 5.1.2
+      '@types/node':
+        specifier: ^22.13.9
+        version: 22.13.9
       nodemon:
         specifier: ^3.1.9
         version: 3.1.9
