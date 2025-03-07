@@ -1,4 +1,4 @@
-name: Building project
+name: Check project
 
 on:
     pull_request
@@ -11,8 +11,8 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    dependencies:
-        name: Dependencies
+    check:
+        name: check
         runs-on: ubuntu-latest
 
         steps:
@@ -33,20 +33,5 @@ jobs:
             - name: Install dependencies
               run: pnpm install
 
-    check:
-        name: Check
-        needs: dependencies
-        runs-on: ubuntu-latest
-
-        steps:
-            - name: Check types
-              run: pnpm run check
-
-    build:
-        name: Build
-        needs: dependencies
-        runs-on: ubuntu-latest
-
-        steps:
-            - name: Build project
-              run: pnpm run build
+            - name: Check TypeScript
+              run: pnpm check
