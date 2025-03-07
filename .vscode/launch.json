@@ -3,9 +3,16 @@
     "configurations": [
       {
         "type": "node-terminal",
-        "name": "Dev server",
+        "name": "Check types",
         "request": "launch",
-        "command": "npm run dev",
+        "command": "pnpm check",
+        "cwd": "${workspaceFolder}"
+      },
+      {
+        "type": "node-terminal",
+        "name": "Start script",
+        "request": "launch",
+        "command": "pnpm dev",
         "cwd": "${workspaceFolder}"
       }
     ]

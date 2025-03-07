@@ -89,7 +89,7 @@ pnpm install
 pnpm dev
 ```
 
-Or with auto restart if script crash at some point:
+Or with auto-restart if crash occurs at some point:
 ```bash
 pnpm start
 ```
