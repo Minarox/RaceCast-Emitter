@@ -165,8 +165,8 @@ export const startBrowser = async (): Promise<void> => {
         const checkTracks = async () => {
             const devices = (await navigator.mediaDevices.enumerateDevices())
                 .filter(device =>
-                    ['audioinput', 'videoinput'].includes(device.kind) &&
-                    !["Default", "HD USB Camera  HD USB Camera", "Cam Link 4K  Cam Link 4K"].includes(device.label)
+                    (device.kind === 'audioinput' && device.label.endsWith('Analog Stereo')) ||
+                    (device.kind === 'videoinput' && device.label.endsWith('(V4L2)'))
                 );
 
             const addedDevices = devices.filter(currentDevice =>
