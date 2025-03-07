@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "node-terminal",
+        "name": "Check types",
+        "request": "launch",
+        "command": "pnpm check",
+        "cwd": "${workspaceFolder}"
+      },
+      {
+        "type": "node-terminal",
+        "name": "Start script",
+        "request": "launch",
+        "command": "pnpm dev",
+        "cwd": "${workspaceFolder}"
+      }
+    ]
+  }
+  
