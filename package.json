@@ -33,7 +33,7 @@
         "colors": "^1.4.0",
         "i2c-bus": "^5.2.3",
         "i2c-mpu6050": "^2.3.0",
-        "livekit-server-sdk": "^2.10.2",
+        "livekit-server-sdk": "^2.11.0",
         "puppeteer-core": "^24.4.0",
         "typescript": "^5.8.2",
         "winston": "^3.17.0"
