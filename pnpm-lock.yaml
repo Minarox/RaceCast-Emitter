@@ -4,7 +4,7 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-packageExtensionsChecksum: sha256-fRd8ysXer7ob7SUulvLoYzpBwaSpsgySQtqS+7kGu8E=
+packageExtensionsChecksum: d6b7ab7374d56f7b36847812715e2c95
 
 importers:
 
@@ -36,8 +36,8 @@ importers:
         specifier: ^5.1.2
         version: 5.1.2
       '@types/node':
-        specifier: ^22.13.9
-        version: 22.13.9
+        specifier: ^22.13.17
+        version: 22.13.17
       nodemon:
         specifier: ^3.1.9
         version: 3.1.9
@@ -88,8 +88,8 @@ packages:
   '@types/i2c-bus@5.1.2':
     resolution: {integrity: sha512-Zph1a3TZnvU8yUEhR8Yvv+Fv61dE3WQ2gMs4B2KgBUuKYE73quagMvmUN9EvRIbf4B+zq1WKMYjLOafdNus1ig==}
 
-  '@types/node@22.13.9':
-    resolution: {integrity: sha512-acBjXdRJ3A6Pb3tqnw9HZmyR3Fiol3aGxRCK1x3d+6CDAMjl7I649wpSd+yNURCjbOUGu9tqtLKnTGxmK6CyGw==}
+  '@types/node@22.13.17':
+    resolution: {integrity: sha512-nAJuQXoyPj04uLgu+obZcSmsfOenUg6DxPKogeUy6yNCFwWaj5sBF8/G/pNo8EtBJjAfSVgfIlugR/BCOleO+g==}
 
   '@types/triple-beam@1.3.5':
     resolution: {integrity: sha512-6WaYesThRMCl19iryMYP7/x2OVgCtbIVflDGFpWnb9irXI3UjYE4AzmYuiUKY1AJstGijoY+MgUszMgRxIYTYw==}
@@ -939,9 +939,9 @@ snapshots:
 
   '@types/i2c-bus@5.1.2':
     dependencies:
-      '@types/node': 22.13.9
+      '@types/node': 22.13.17
 
-  '@types/node@22.13.9':
+  '@types/node@22.13.17':
     dependencies:
       undici-types: 6.20.0
 
@@ -949,7 +949,7 @@ snapshots:
 
   '@types/yauzl@2.10.3':
     dependencies:
-      '@types/node': 22.13.9
+      '@types/node': 22.13.17
     optional: true
 
   abbrev@3.0.0:
