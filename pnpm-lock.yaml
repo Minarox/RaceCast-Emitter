@@ -4,7 +4,7 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-packageExtensionsChecksum: sha256-fRd8ysXer7ob7SUulvLoYzpBwaSpsgySQtqS+7kGu8E=
+packageExtensionsChecksum: d6b7ab7374d56f7b36847812715e2c95
 
 importers:
 
@@ -20,8 +20,8 @@ importers:
         specifier: ^2.3.0
         version: 2.3.0
       livekit-server-sdk:
-        specifier: ^2.10.2
-        version: 2.10.2
+        specifier: ^2.12.0
+        version: 2.12.0
       puppeteer-core:
         specifier: ^24.4.0
         version: 24.4.0
@@ -44,8 +44,8 @@ importers:
 
 packages:
 
-  '@bufbuild/protobuf@1.10.0':
-    resolution: {integrity: sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag==}
+  '@bufbuild/protobuf@1.10.1':
+    resolution: {integrity: sha512-wJ8ReQbHxsAfXhrf9ixl0aYbZorRuOWpBNzm8pL8ftmSxQx/wnJD5Eg861NwJU/czy2VXFIebCeZnZrI9rktIQ==}
 
   '@colors/colors@1.6.0':
     resolution: {integrity: sha512-Ir+AOibqzrIsL6ajt3Rz3LskB7OiMVHqltZmspbW/TJuTVuyOMirVqAkjfY6JISiLHgyNqicAC8AyHHGzNd/dA==}
@@ -62,8 +62,8 @@ packages:
     resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
     engines: {node: '>=18.0.0'}
 
-  '@livekit/protocol@1.34.0':
-    resolution: {integrity: sha512-bU7pCLAMRVTVZb1KSxA46q55bhOc4iATrY/gccy2/oX1D57tiZEI+8wGRWHeDwBb0UwnABu6JXzC4tTFkdsaOg==}
+  '@livekit/protocol@1.37.0':
+    resolution: {integrity: sha512-TV53woej1pvKQLDUA7DxEVpQiK2hX/6nLNxUP8TZrzguIX4CreTkdb97cLyMq5rPi/YB/uLRoG373WqhCnNRbA==}
 
   '@npmcli/agent@3.0.0':
     resolution: {integrity: sha512-S79NdEgDQd/NGCay6TCoVzXSj74skRZIKJcpJjC5lOq34SZzyI6MqtiiWoiVWoVrTcGjNeC4ipbh1VIHlpfF5Q==}
@@ -468,8 +468,8 @@ packages:
   kuler@2.0.0:
     resolution: {integrity: sha512-Xq9nH7KlWZmXAtodXDDRE7vs6DU1gTU8zYDHDiWLSip45Egwq3plLHzPn27NgvzL2r1LMPC1vdqh98sQxtqj4A==}
 
-  livekit-server-sdk@2.10.2:
-    resolution: {integrity: sha512-XDoHvLY9a6DXM7Iit7XdNp1M9OK/idWHuqZnKAoirBbPmaFmlAVKeQGQIZTG7UrktgoRAPvu3vv0UdC6Ds80Ng==}
+  livekit-server-sdk@2.12.0:
+    resolution: {integrity: sha512-6i2l0Ja1yhYvCXqU9wZ3SlWPEm1pYXpSJbpmT3sN0UWS61+jF6qkVY4AeSRQ53w5zrgzLBIyDwooBEMxz7XyMw==}
     engines: {node: '>=18'}
 
   logform@2.7.0:
@@ -777,8 +777,8 @@ packages:
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
-  type-fest@4.37.0:
-    resolution: {integrity: sha512-S/5/0kFftkq27FPNye0XM1e2NsnoD/3FS+pBmbjmmtLT6I+i344KoOf7pvXreaFsDamWeaJX55nczA1m5PsBDg==}
+  type-fest@4.40.1:
+    resolution: {integrity: sha512-9YvLNnORDpI+vghLU/Nf+zSv0kL47KbVJ1o3sKgoTefl6i+zebxbiDQWoe/oWWqPhIgQdRZRT1KA9sCPL810SA==}
     engines: {node: '>=16'}
 
   typed-query-selector@2.12.0:
@@ -874,7 +874,7 @@ packages:
 
 snapshots:
 
-  '@bufbuild/protobuf@1.10.0': {}
+  '@bufbuild/protobuf@1.10.1': {}
 
   '@colors/colors@1.6.0': {}
 
@@ -899,9 +899,9 @@ snapshots:
       minipass: 7.1.2
     optional: true
 
-  '@livekit/protocol@1.34.0':
+  '@livekit/protocol@1.37.0':
     dependencies:
-      '@bufbuild/protobuf': 1.10.0
+      '@bufbuild/protobuf': 1.10.1
 
   '@npmcli/agent@3.0.0':
     dependencies:
@@ -1058,7 +1058,7 @@ snapshots:
       camelcase: 8.0.0
       map-obj: 5.0.0
       quick-lru: 6.1.2
-      type-fest: 4.37.0
+      type-fest: 4.40.1
 
   camelcase@8.0.0: {}
 
@@ -1344,10 +1344,10 @@ snapshots:
 
   kuler@2.0.0: {}
 
-  livekit-server-sdk@2.10.2:
+  livekit-server-sdk@2.12.0:
     dependencies:
-      '@bufbuild/protobuf': 1.10.0
-      '@livekit/protocol': 1.34.0
+      '@bufbuild/protobuf': 1.10.1
+      '@livekit/protocol': 1.37.0
       camelcase-keys: 9.1.3
       jose: 5.10.0
 
@@ -1734,7 +1734,7 @@ snapshots:
 
   tslib@2.8.1: {}
 
-  type-fest@4.37.0: {}
+  type-fest@4.40.1: {}
 
   typed-query-selector@2.12.0: {}
 
