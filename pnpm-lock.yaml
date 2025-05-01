@@ -4,7 +4,7 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-packageExtensionsChecksum: sha256-fRd8ysXer7ob7SUulvLoYzpBwaSpsgySQtqS+7kGu8E=
+packageExtensionsChecksum: d6b7ab7374d56f7b36847812715e2c95
 
 importers:
 
@@ -26,8 +26,8 @@ importers:
         specifier: ^24.4.0
         version: 24.4.0
       typescript:
-        specifier: ^5.8.2
-        version: 5.8.2
+        specifier: ^5.8.3
+        version: 5.8.3
       winston:
         specifier: ^3.17.0
         version: 3.17.0
@@ -784,8 +784,8 @@ packages:
   typed-query-selector@2.12.0:
     resolution: {integrity: sha512-SbklCd1F0EiZOyPiW192rrHZzZ5sBijB6xM+cpmrwDqObvdtunOHHIk9fCGsoK5JVIYXoyEp4iEdE3upFH3PAg==}
 
-  typescript@5.8.2:
-    resolution: {integrity: sha512-aJn6wq13/afZp/jT9QZmwEjDqqvSGp1VT5GVg+f/t6/oVyrgXM6BY1h9BRh/O5p3PlUPAe+WuiEZOmb/49RqoQ==}
+  typescript@5.8.3:
+    resolution: {integrity: sha512-p1diW6TqL9L07nNxvRMM7hMMw4c5XOo/1ibL4aAIGmSAt9slTE1Xgw5KWuof2uTOvCg9BY7ZRi+GaF+7sfgPeQ==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -1738,7 +1738,7 @@ snapshots:
 
   typed-query-selector@2.12.0: {}
 
-  typescript@5.8.2: {}
+  typescript@5.8.3: {}
 
   undefsafe@2.0.5: {}
 
