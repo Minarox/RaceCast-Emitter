@@ -1,6 +1,6 @@
 {
     "name": "racecast-emitter",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Onboard autonomous IoT project to capture and transmit data and media stream from the race car.",
     "license": "Apache-2.0",
     "author": {
