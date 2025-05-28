@@ -7,6 +7,11 @@ export const HTTP_URL = `http${TLS ? 's' : ''}://${process.env.LIVEKIT_DOMAIN}`;
 let token: string;
 let tokenCreatedAt: number;
 
+/**
+ * Create a LiveKit token.
+ *
+ * @returns {Promise<string>} - A promise that resolves to the generated LiveKit token.
+ */
 export async function getLiveKitToken(): Promise<string> {
     if (token && tokenCreatedAt && (Date.now() - tokenCreatedAt) < 60 * 60 * 12 * 1000) {
         return token;
@@ -46,6 +51,12 @@ export async function getLiveKitToken(): Promise<string> {
     return token;
 }
 
+/**
+ * Update the LiveKit room metadata.
+ *
+ * @param {any} metadata - The metadata to write to the room.
+ * @returns {Promise<void>} - A promise that resolves when the metadata update is complete.
+ */
 export async function updateRoomMetadata(metadata: any): Promise<void> {
     // Create a new RoomService
     const roomService: LiveKit.RoomServiceClient = new LiveKit.RoomServiceClient(
@@ -64,7 +75,7 @@ export async function updateRoomMetadata(metadata: any): Promise<void> {
 
             // Update room metadata
             await roomService.updateRoomMetadata(
-                process.env.LIVEKIT_ROOM as string,
+                process.env.LIVEKIT_ROOM,
                 JSON.stringify({
                     ...roomMetadata,
                     car: {
