@@ -51,6 +51,7 @@ export const startBrowser = async (): Promise<void> => {
             '--ash-no-nudges',
             '--no-first-run',
             '--disable-features=Translate',
+            '--disable-features=WebRtcPipeWireCamera',
             '--no-default-browser-check',
             '--allow-chrome-scheme-url',
             '--use-fake-ui-for-media-stream',
