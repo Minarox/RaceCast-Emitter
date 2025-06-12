@@ -123,15 +123,15 @@ logger.debug(`TLS: ${TLS ? colors.green('enabled') : colors.red('disabled')}`);
 logger.debug(`Domain: ${process.env.LIVEKIT_DOMAIN}`);
 logger.debug(`Modem ID: ${MODEM_ID}`);
 
-startMPU();
+// startMPU();
 
-try {
-    logger.debug('Enable GPS location...');
-    execSync(`sudo mmcli -m ${MODEM_ID} --enable --location-enable-gps-raw --location-enable-gps-nmea`);
-    setInterval(async () => await updateEmitterInfo(), 1000);
-} catch (error: any) {
-    logger.error(error);
-}
+// try {
+//     logger.debug('Enable GPS location...');
+//     execSync(`sudo mmcli -m ${MODEM_ID} --enable --location-enable-gps-raw --location-enable-gps-nmea`);
+//     setInterval(async () => await updateEmitterInfo(), 1000);
+// } catch (error: any) {
+//     logger.error(error);
+// }
 
 logger.debug("------------------");
 startBrowser();

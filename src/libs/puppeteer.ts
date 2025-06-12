@@ -52,6 +52,7 @@ export const startBrowser = async (): Promise<void> => {
             '--no-first-run',
             '--disable-features=Translate',
             '--disable-features=WebRtcPipeWireCamera',
+            '--enable-features=VaapiVideoEncoder,VaapiVideoDecodeLinuxGL',
             '--no-default-browser-check',
             '--allow-chrome-scheme-url',
             '--use-fake-ui-for-media-stream',
@@ -170,10 +171,11 @@ export const startBrowser = async (): Promise<void> => {
         }
 
         const checkTracks = async () => {
+            console.log(await navigator.mediaDevices.enumerateDevices());
             const devices = (await navigator.mediaDevices.enumerateDevices())
                 .filter(device =>
                     (device.kind === 'audioinput' && device.label.endsWith('Analog Stereo')) ||
-                    (device.kind === 'videoinput' && device.label.endsWith('(V4L2)'))
+                    (device.kind === 'videoinput' && device.label.startsWith('HD USB Camera'))
                 );
 
             const addedDevices = devices.filter(currentDevice =>
