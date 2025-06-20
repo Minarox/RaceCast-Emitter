@@ -291,6 +291,58 @@ func publishStreams() {
 		MustEval(`async () => {
 			const url = "wss://" + await window.env('LIVEKIT_DOMAIN');
 			const token = await window.env("LIVEKIT_CLIENT_TOKEN");
+			const room = new LivekitClient.Room({
+				reconnectPolicy: {
+					nextRetryDelayInMs: () => {
+						return 1000;
+					}
+				}
+			});
+
+			room.prepareConnection(url, token);
+
+			const createAudioTrack = async (device) => {
+				await room.localParticipant.publishTrack(
+					await LivekitClient.createLocalAudioTrack({
+						deviceId: device.deviceId,
+						autoGainControl: false,
+						echoCancellation: false,
+						noiseSuppression: false
+					}),
+					{
+						name: device.label,
+						stream: device.groupId,
+						simulcast: false,
+						source: LivekitClient.Track.Source.Microphone,
+						red: false,
+						dtx: true,
+						stopMicTrackOnMute: false,
+						/* audioPreset: {
+							maxBitrate: 36_000
+						} */
+					}
+				);
+			};
+
+			const createVideoTrack = async (device) => {
+				await room.localParticipant.publishTrack(
+					await LivekitClient.createLocalVideoTrack({
+						deviceId: device.deviceId
+					}),
+					{
+						name: device.label,
+						stream: device.groupId,
+						simulcast: false,
+						source: LivekitClient.Track.Source.Camera,
+						degradationPreference: "maintain-framerate",
+						videoCodec: "VP8",
+						/* videoEncoding: {
+							maxFramerate: 30,
+							maxBitrate: 2_500_000,
+						} */
+					}
+				);
+			};
 
 			// Create audio and video tracks
 			const devices = (await navigator.mediaDevices.enumerateDevices())
@@ -298,11 +350,29 @@ func publishStreams() {
 			const audioDevices = devices.filter(device => device.kind === 'audioinput');
 			const videoDevices = devices.filter(device => device.kind === 'videoinput');
 
-			await window.log(JSON.stringify(audioDevices, null, 2));
-			await window.log(JSON.stringify(videoDevices, null, 2));
+			audioDevices.forEach(async (device) => await createAudioTrack(device));
+			videoDevices.forEach(async (device) => await createVideoTrack(device));
 
-			await window.log(url);
-			await window.log(token);
+			room
+				.on(LivekitClient.RoomEvent.LocalTrackPublished, async (track) => {
+					await window.log(
+						JSON.stringify({ name: track.trackName, type: track.kind })
+					);
+				})
+				.on(LivekitClient.RoomEvent.Connected, async () => {
+					await window.log("Connected");
+				})
+				.on(LivekitClient.RoomEvent.Reconnecting, async () => {
+					await window.log("Reconnecting...");
+				})
+				.on(LivekitClient.RoomEvent.Reconnected, async () => {
+					await window.log("Reconnected");
+				})
+				.on(LivekitClient.RoomEvent.Disconnected, async () => {
+					await window.log("Disconnected");
+				});
+
+			await room.connect(url, token);
 		}`)
 
 	select {}
