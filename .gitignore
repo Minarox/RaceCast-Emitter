@@ -6,3 +6,6 @@
 
 # jetbrains setting folder
 .idea/
+
+# livekit client sdk
+livekit*.**.js

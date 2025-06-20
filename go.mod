@@ -24,6 +24,7 @@ require (
 	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-rod/rod v0.116.2 // indirect
 	github.com/google/cel-go v0.25.0 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -74,6 +75,11 @@ require (
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
+	github.com/ysmood/fetchup v0.2.3 // indirect
+	github.com/ysmood/goob v0.4.0 // indirect
+	github.com/ysmood/got v0.40.0 // indirect
+	github.com/ysmood/gson v0.7.3 // indirect
+	github.com/ysmood/leakless v0.9.0 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

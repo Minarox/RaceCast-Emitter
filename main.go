@@ -14,31 +14,18 @@ import (
 
 	i2c "github.com/d2r2/go-i2c"
 	"github.com/d2r2/go-logger"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/joho/godotenv"
-	"github.com/livekit/mediatransportutil/pkg/pacer"
+	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/mediadevices"
-	"github.com/pion/mediadevices/pkg/codec/vpx"
-	_ "github.com/pion/mediadevices/pkg/driver/camera"
-	"github.com/pion/webrtc/v4"
-	// "github.com/pion/mediadevices/pkg/codec/opus"
-	// _ "github.com/pion/mediadevices/pkg/driver/microphone"
+	"github.com/ysmood/gson"
 )
 
 var temperatureReadings [32]float32
 var oldMetadata any
-
-func main() {
-	// Loading environment variables from .env file
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatalf("Unable to start the application: .env file not found.")
-	}
-
-	go roomMetadataUpdater()
-	publishStreams()
-}
 
 func mpuTemperatureUpdater() {
 	logger.ChangePackageLogLevel("i2c", logger.InfoLevel)
@@ -77,7 +64,7 @@ func roomMetadataUpdater() {
 
 	// Connect to LiveKit server
 	roomClient := lksdk.NewRoomServiceClient(
-		os.Getenv("LIVEKIT_URL"),
+		"https://" + os.Getenv("LIVEKIT_DOMAIN"),
 		os.Getenv("LIVEKIT_API_KEY"),
 		os.Getenv("LIVEKIT_API_SECRET"),
 	)
@@ -193,102 +180,120 @@ func roomMetadataUpdater() {
 	}
 }
 
-func publishStreams() {
-	pf := pacer.NewPacerFactory(
-		pacer.LeakyBucketPacer,
-		pacer.WithBitrate(3000000),
-		pacer.WithMaxLatency(2 * time.Second),
-	)
+func downloadLiveKitClient() {
+	// Download the LiveKit client library if not already present
+	if _, err := os.Stat("livekit-client.umd.min.js"); os.IsNotExist(err) {
+		log.Println("Downloading LiveKit client library...")
 
-	// Connect to LiveKit room
-	room, err := lksdk.ConnectToRoom(
-		os.Getenv("LIVEKIT_URL"),
-		lksdk.ConnectInfo{
-			APIKey:              os.Getenv("LIVEKIT_API_KEY"),
-			APISecret:           os.Getenv("LIVEKIT_API_SECRET"),
-			RoomName:            os.Getenv("LIVEKIT_ROOM"),
-			ParticipantIdentity: os.Getenv("LIVEKIT_IDENTITY"),
-		},
-		&lksdk.RoomCallback{},
-		lksdk.WithPacer(pf),
-	)
-	if err != nil {
-		log.Fatalf("Unable to connect to LiveKit room: %v", err)
-	}
-
-	defer room.Disconnect()
-
-	// Create video codec parameters
-	vp8Params, err := vpx.NewVP8Params()
-	if err != nil {
-		log.Fatalf("Failed to create video codec: %v", err)
-	}
-	vp8Params.BitRate = 3_000_000
-
-	// Create audio codec parameters
-	// opusParams, err := opus.NewParams()
-	// if err != nil {
-	// 	log.Fatalf("Failed to create audio codec: %v", err)
-	// }
-	// opusParams.BitRate = 64_000
-
-	codecSelector := mediadevices.NewCodecSelector(
-		mediadevices.WithVideoEncoders(&vp8Params),
-		// mediadevices.WithAudioEncoders(&opusParams),
-	)
-
-	mediaEngine := webrtc.MediaEngine{}
-	codecSelector.Populate(&mediaEngine)
-
-	// Get available video and audio tracks
-	mediaStream, err := mediadevices.GetUserMedia(mediadevices.MediaStreamConstraints{
-		Video: func(constraint *mediadevices.MediaTrackConstraints) {
-			// constraint.Width = prop.Int(1280)
-			// constraint.Height = prop.Int(720)
-			// constraint.FrameRate = prop.Float(30.0)
-		},
-		// Audio: func(constraint *mediadevices.MediaTrackConstraints) {},
-		Codec: codecSelector,
-	})
-	if err != nil {
-		log.Fatalf("Failed to get user media: %v", err)
-	}
-
-	for index, track := range mediaStream.GetVideoTracks() {
-		videoTrack := track.(*mediadevices.VideoTrack)
-		defer videoTrack.Close()
-
-		publishedTrack, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-			Name:        strconv.Itoa(index),
-			Stream:      videoTrack.StreamID(),
-			VideoWidth:  1280,
-			VideoHeight: 720,
-		})
-		if err != nil {
-			log.Fatalf("Failed to publish track: %v", err)
+		cmd := exec.Command("curl", "-o", "livekit-client.umd.min.js", "https://cdn.jsdelivr.net/npm/livekit-client@2.13.6/dist/livekit-client.umd.min.js")
+		if err := cmd.Run(); err != nil {
+			log.Fatalf("Failed to download LiveKit client library: %v", err)
 		}
+	}
+}
 
-		log.Printf("Published video track: %s", publishedTrack.SID())
-
-		defer publishedTrack.CloseTrack()
+func setLiveKitClientToken() {
+	at := auth.NewAccessToken(os.Getenv("LIVEKIT_API_KEY"), os.Getenv("LIVEKIT_API_SECRET"))
+	grant := &auth.VideoGrant{
+		RoomCreate: true,
+		RoomJoin:   true,
+		Room:       os.Getenv("LIVEKIT_ROOM"),
 	}
 
-	// for index, track := range mediaStream.GetAudioTracks() {
-	// 	audioTrack := track.(*mediadevices.AudioTrack)
-	// 	defer audioTrack.Close()
+	at.SetVideoGrant(grant).
+		SetIdentity(os.Getenv("LIVEKIT_IDENTITY")).
+		SetValidFor(time.Hour * 24)
 
-	// 	publishedTrack, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-	// 		Name:   strconv.Itoa(index),
-	// 		Stream: audioTrack.StreamID(),
-	// 	})
-	// 	if err != nil {
-	// 		log.Fatalf("Failed to publish audio track: %v", err)
-	// 	}
+	token, err := at.ToJWT()
+	if err != nil {
+		log.Fatalf("Failed to generate LiveKit token: %v", err)
+	}
 
-	// 	log.Printf("Published audio track: %s", publishedTrack.SID())
+	os.Setenv("LIVEKIT_CLIENT_TOKEN", token)
+}
 
-	// 	defer publishedTrack.CloseTrack()
-	// }
+func publishStreams() {
+	downloadLiveKitClient()
+	setLiveKitClientToken()
+
+	path, exists := launcher.LookPath()
+	if !exists {
+		log.Println("Chromium browser launcher not found. Downloading...")
+	}
+
+	url := launcher.
+		NewUserMode().
+		Bin(path).
+		Leakless(true).
+		Devtools(false).
+		Headless(false).
+		HeadlessNew(true).
+		Set("no-first-run").
+		Set("no-default-browser-check").
+		Set("disable-search-engine-choice-screen").
+		Set("ash-no-nudges").
+		Set("disable-features", "Translate,WebRtcPipeWireCamera").
+		Set("use-fake-ui-for-media-stream").
+		MustLaunch()
+
+	browser := rod.New().ControlURL(url).MustConnect()
+	defer browser.MustClose()
+
+	// [DEBUG] Check hardware acceleration support
+	// browser.MustPage("chrome://gpu").MustWaitLoad().MustPDF("sample.pdf")
+
+	page, _ := browser.Page(proto.TargetCreateTarget{})
+
+	// Inject livekit-client.umd.min.js into the page
+	scriptBytes, err := os.ReadFile("livekit-client.umd.min.js")
+	if err != nil {
+		log.Fatalf("Failed to read livekit-client.umd.min.js: %v", err)
+	}
+	proto.PageAddScriptToEvaluateOnNewDocument{
+		Source: string(scriptBytes),
+	}.Call(page)
+
+	page.MustExpose("env", func(v gson.JSON) (any, error) {
+		return os.Getenv(v.Str()), nil
+	})
+
+	page.MustExpose("log", func(v gson.JSON) (any, error) {
+		log.Println(v.Str())
+		return nil, nil
+	})
+
+	page.
+		MustNavigate("https://" + os.Getenv("LIVEKIT_DOMAIN")).
+		MustEval(`async () => {
+			const url = "wss://" + await window.env('LIVEKIT_DOMAIN');
+			const token = await window.env("LIVEKIT_CLIENT_TOKEN");
+
+			// Create audio and video tracks
+			const devices = (await navigator.mediaDevices.enumerateDevices())
+				.filter(device =>['audioinput', 'videoinput'].includes(device.kind) && device.deviceId !== 'default');
+			const audioDevices = devices.filter(device => device.kind === 'audioinput');
+			const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+			await window.log(JSON.stringify(audioDevices, null, 2));
+			await window.log(JSON.stringify(videoDevices, null, 2));
+
+			await window.log(url);
+			await window.log(token);
+		}`)
 
 	select {}
+}
+
+func main() {
+	// Loading environment variables from .env file
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatalf("Unable to start the application: .env file not found.")
+	}
+
+	// Update room metadata with modem, location, and temperature data
+	go roomMetadataUpdater()
+
+	// Publish audio and video streams to LiveKit
+	publishStreams()
 }
