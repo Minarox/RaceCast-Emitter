@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	i2c "github.com/d2r2/go-i2c"
@@ -26,6 +27,25 @@ import (
 
 var temperatureReadings [32]float32
 var oldMetadata any
+
+type Modem struct {
+	Modem struct {
+		Generic struct {
+			AccessTechnologies any `json:"access-technologies"`
+			SignalQuality      struct {
+				Value string `json:"value"`
+			} `json:"signal-quality"`
+		} `json:"generic"`
+		Location struct {
+			GPS struct {
+				Longitude string   `json:"longitude"`
+				Latitude  string   `json:"latitude"`
+				Altitude  string   `json:"altitude"`
+				NMEA      []string `json:"nmea"`
+			} `json:"gps"`
+		} `json:"location"`
+	} `json:"modem"`
+}
 
 func mpuTemperatureUpdater() {
 	logger.ChangePackageLogLevel("i2c", logger.InfoLevel)
@@ -54,12 +74,50 @@ func mpuTemperatureUpdater() {
 	}
 }
 
+func parseFloat32(s string) *float32 {
+	if s == "" {
+		return nil
+	}
+	if val, err := strconv.ParseFloat(s, 32); err == nil {
+		v := float32(val)
+		return &v
+	}
+	return nil
+}
+
+func parseSignalQuality(s string) *int {
+	if s == "" {
+		return nil
+	}
+	if val, err := strconv.Atoi(s); err == nil {
+		return &val
+	}
+	return nil
+}
+
+func parseSpeed(nmea []string) *float32 {
+	for _, line := range nmea {
+		if strings.HasPrefix(line, "$GPVTG") {
+			parts := strings.Split(line, ",")
+			if len(parts) > 7 {
+				return parseFloat32(parts[7])
+			}
+		}
+	}
+	return nil
+}
+
 func roomMetadataUpdater() {
 	go mpuTemperatureUpdater()
 
 	modemID, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
 	if err != nil {
 		log.Printf("Failed to get modem ID: %v", err)
+	}
+
+	_, err = exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` --location-enable-gps-raw --location-enable-gps-nmea`).Output()
+	if err != nil {
+		log.Printf("Failed to enable GPS: %v", err)
 	}
 
 	// Connect to LiveKit server
@@ -71,65 +129,31 @@ func roomMetadataUpdater() {
 
 	for {
 		// Parse modem data
-		modemBytes, _ := exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` -J`).Output()
+		modemOutput, _ := exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` -J`).Output()
 
-		var modemData map[string]any
-		var tech, signal any = nil, nil
-		if err := json.Unmarshal(modemBytes, &modemData); err == nil {
-			if modem, ok := modemData["modem"].(map[string]any); ok {
-				if generic, ok := modem["generic"].(map[string]any); ok {
-					if accessTechnologies, ok := generic["access-technologies"]; ok {
-						tech = accessTechnologies
-					}
-					if signalQuality, ok := generic["signal-quality"].(map[string]any); ok {
-						if value, ok := signalQuality["value"].(string); ok {
-							if parsedValue, err := strconv.Atoi(value); err == nil {
-								signal = parsedValue
-							}
-						}
-					}
-				}
-			}
+		var modem Modem
+		if err := json.Unmarshal(modemOutput, &modem); err != nil {
+			log.Println("Error parsing modem data:", err)
+			return
 		}
+
+		tech := modem.Modem.Generic.AccessTechnologies
+		signal := parseSignalQuality(modem.Modem.Generic.SignalQuality.Value)
 
 		// Parse location data
-		locationBytes, _ := exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` --location-get -J`).Output()
+		locationOutput, _ := exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` --location-get -J`).Output()
 
-		var locationData map[string]any
-		var long, lat, alt, speed any = nil, nil, nil, nil
-		if err := json.Unmarshal(locationBytes, &locationData); err == nil {
-			if location, ok := locationData["location"].(map[string]any); ok {
-				if longitude, ok := location["longitude"].(string); ok && len(longitude) > 0 {
-					if value, err := strconv.ParseFloat(longitude, 32); err == nil {
-						long = float32(value)
-					}
-				}
-				if latitude, ok := location["latitude"].(string); ok && len(latitude) > 0 {
-					if value, err := strconv.ParseFloat(latitude, 32); err == nil {
-						lat = float32(value)
-					}
-				}
-				if altitude, ok := location["altitude"].(string); ok && len(altitude) > 0 {
-					if value, err := strconv.ParseFloat(altitude, 32); err == nil {
-						alt = float32(value)
-					}
-				}
-			}
-			// if nmea, ok := location["nmea"].([]any); ok {
-			// 	for _, nmeaItem := range nmea {
-			// 		if nmeaStr, ok := nmeaItem.(string); ok && len(nmeaStr) > 0 && nmeaStr[:6] == "$GPVTG" {
-			// 			parts := splitNMEA(nmeaStr)
-			// 			if len(parts) > 7 {
-			// 				if speedStr := parts[7]; speedStr != "" {
-			// 					if parsedSpeed, err := strconv.ParseFloat(speedStr, 32); err == nil {
-			// 						speed = float32(parsedSpeed)
-			// 					}
-			// 				}
-			// 			}
-			// 		}
-			// 	}
-			// }
+		var location Modem
+		if err := json.Unmarshal(locationOutput, &location); err != nil {
+			log.Println("Error parsing location data:", err)
+			return
 		}
+
+		gps := location.Modem.Location.GPS
+		long := parseFloat32(gps.Longitude)
+		lat := parseFloat32(gps.Latitude)
+		alt := parseFloat32(gps.Altitude)
+		speed := parseSpeed(gps.NMEA)
 
 		// Compute average temperature
 		var sum float32
@@ -164,7 +188,7 @@ func roomMetadataUpdater() {
 			payload["timestamp"] = time.Now().Unix()
 			payloadJSON, _ := json.Marshal(payload)
 
-			// log.Printf("Updating room metadata: %s", string(payloadJSON))
+			log.Printf("Updating room metadata: %s", string(payloadJSON))
 
 			// Update room metadata
 			go roomClient.UpdateRoomMetadata(
