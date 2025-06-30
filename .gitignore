@@ -9,3 +9,6 @@
 
 # livekit client sdk
 livekit*.**.js
+
+# Logs
+*.log

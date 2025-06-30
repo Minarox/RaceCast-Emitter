@@ -23,8 +23,10 @@ import (
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/ysmood/gson"
+	"go.uber.org/zap"
 )
 
+var sugar *zap.SugaredLogger
 var temperatureReadings [32]float32
 var oldMetadata any
 
@@ -48,21 +50,21 @@ type Modem struct {
 }
 
 func mpuTemperatureUpdater() {
-	logger.ChangePackageLogLevel("i2c", logger.InfoLevel)
+	logger.ChangePackageLogLevel("i2c", logger.LogLevel(sugar.Level()))
 	i2cClient, err := i2c.NewI2C(0x68, 1)
 	if err != nil {
-		log.Fatalf("Unable to create I2C client: %v", err)
+		sugar.Fatalw("Failed to create I2C client.", "details", err)
 	}
 	defer i2cClient.Close()
 
 	if err := i2cClient.WriteRegU8(0x6B, 0x00); err != nil {
-		log.Fatalf("Failed to wake up MPU6050: %v", err)
+		sugar.Fatalw("Failed to wake up MPU6050.", "details", err)
 	}
 
 	for {
 		buf, _, err := i2cClient.ReadRegBytes(0x41, 2)
 		if err != nil {
-			log.Printf("Failed to read temperature: %v", err)
+			sugar.Errorw("Failed to read temperature from MPU6050.", "details", err)
 		}
 
 		rawTemp := int16(binary.BigEndian.Uint16(buf))
@@ -112,12 +114,12 @@ func roomMetadataUpdater() {
 
 	modemID, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
 	if err != nil {
-		log.Printf("Failed to get modem ID: %v", err)
+		sugar.Fatalw("Failed to get modem ID.", "details", err)
 	}
 
 	_, err = exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` --location-enable-gps-raw --location-enable-gps-nmea`).Output()
 	if err != nil {
-		log.Printf("Failed to enable GPS: %v", err)
+		sugar.Errorw("Failed to enable GPS.", "details", err)
 	}
 
 	// Connect to LiveKit server
@@ -133,7 +135,7 @@ func roomMetadataUpdater() {
 
 		var modem Modem
 		if err := json.Unmarshal(modemOutput, &modem); err != nil {
-			log.Println("Error parsing modem data:", err)
+			sugar.Warnw("Error parsing modem data.", "details", err)
 			return
 		}
 
@@ -145,7 +147,7 @@ func roomMetadataUpdater() {
 
 		var location Modem
 		if err := json.Unmarshal(locationOutput, &location); err != nil {
-			log.Println("Error parsing location data:", err)
+			sugar.Warnw("Error parsing location data.", "details", err)
 			return
 		}
 
@@ -188,7 +190,7 @@ func roomMetadataUpdater() {
 			payload["timestamp"] = time.Now().Unix()
 			payloadJSON, _ := json.Marshal(payload)
 
-			log.Printf("Updating room metadata: %s", string(payloadJSON))
+			sugar.Debugw("Updating room metadata.", "payload", string(payloadJSON))
 
 			// Update room metadata
 			go roomClient.UpdateRoomMetadata(
@@ -207,11 +209,11 @@ func roomMetadataUpdater() {
 func downloadLiveKitClient() {
 	// Download the LiveKit client library if not already present
 	if _, err := os.Stat("livekit-client.umd.min.js"); os.IsNotExist(err) {
-		log.Println("Downloading LiveKit client library...")
+		sugar.Info("Downloading LiveKit client library...")
 
 		cmd := exec.Command("curl", "-o", "livekit-client.umd.min.js", "https://cdn.jsdelivr.net/npm/livekit-client@2.13.6/dist/livekit-client.umd.min.js")
 		if err := cmd.Run(); err != nil {
-			log.Fatalf("Failed to download LiveKit client library: %v", err)
+			sugar.Fatalw("Failed to download LiveKit client library.", "details", err)
 		}
 	}
 }
@@ -230,7 +232,7 @@ func setLiveKitClientToken() {
 
 	token, err := at.ToJWT()
 	if err != nil {
-		log.Fatalf("Failed to generate LiveKit token: %v", err)
+		sugar.Fatalw("Failed to generate LiveKit token.", "details", err)
 	}
 
 	os.Setenv("LIVEKIT_CLIENT_TOKEN", token)
@@ -242,7 +244,7 @@ func publishStreams() {
 
 	path, exists := launcher.LookPath()
 	if !exists {
-		log.Println("Chromium browser launcher not found. Downloading...")
+		sugar.Warnw("Chromium browser launcher not found. Downloading...")
 	}
 
 	url := launcher.
@@ -271,7 +273,7 @@ func publishStreams() {
 	// Inject livekit-client.umd.min.js into the page
 	scriptBytes, err := os.ReadFile("livekit-client.umd.min.js")
 	if err != nil {
-		log.Fatalf("Failed to read livekit-client.umd.min.js: %v", err)
+		sugar.Fatalw("Failed to read LiveKit client library.", "details", err)
 	}
 	proto.PageAddScriptToEvaluateOnNewDocument{
 		Source: string(scriptBytes),
@@ -281,8 +283,18 @@ func publishStreams() {
 		return os.Getenv(v.Str()), nil
 	})
 
-	page.MustExpose("log", func(v gson.JSON) (any, error) {
-		log.Println(v.Str())
+	page.MustExpose("logDebug", func(v gson.JSON) (any, error) {
+		sugar.Debugw("LiveKit client.", "message", v.Str())
+		return nil, nil
+	})
+
+	page.MustExpose("logInfo", func(v gson.JSON) (any, error) {
+		sugar.Infow("LiveKit client.", "message", v.Str())
+		return nil, nil
+	})
+
+	page.MustExpose("logWarn", func(v gson.JSON) (any, error) {
+		sugar.Warnw("LiveKit client.", "message", v.Str())
 		return nil, nil
 	})
 
@@ -355,21 +367,21 @@ func publishStreams() {
 
 			room
 				.on(LivekitClient.RoomEvent.LocalTrackPublished, async (track) => {
-					await window.log(
+					await window.logDebug(
 						JSON.stringify({ name: track.trackName, type: track.kind })
 					);
 				})
 				.on(LivekitClient.RoomEvent.Connected, async () => {
-					await window.log("Connected");
+					await window.logInfo("Connected");
 				})
 				.on(LivekitClient.RoomEvent.Reconnecting, async () => {
-					await window.log("Reconnecting...");
+					await window.logWarn("Reconnecting...");
 				})
 				.on(LivekitClient.RoomEvent.Reconnected, async () => {
-					await window.log("Reconnected");
+					await window.logInfo("Reconnected");
 				})
 				.on(LivekitClient.RoomEvent.Disconnected, async () => {
-					await window.log("Disconnected");
+					await window.logWarn("Disconnected");
 				});
 
 			await room.connect(url, token);
@@ -379,10 +391,22 @@ func publishStreams() {
 }
 
 func main() {
+	// Loading logger
+	config := zap.NewProductionConfig()
+	config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	config.OutputPaths = []string{"stdout", "app.log"}
+    logger, err := config.Build()
+
+    if err != nil {
+        log.Fatalf("Failed to build logger: %v", err)
+    }
+
+    sugar = logger.Sugar()
+	sugar.Debugw("Launching program.", "process_id", os.Getpid())
+
 	// Loading environment variables from .env file
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatalf("Unable to start the application: .env file not found.")
+	if godotenv.Load() != nil {
+		sugar.Fatal(".env file not found.")
 	}
 
 	// Update room metadata with modem, location, and temperature data
