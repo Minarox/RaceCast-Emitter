@@ -175,7 +175,7 @@ export const startBrowser = async (): Promise<void> => {
             const devices = (await navigator.mediaDevices.enumerateDevices())
                 .filter(device =>
                     (device.kind === 'audioinput' && device.label.endsWith('Analog Stereo')) ||
-                    (device.kind === 'videoinput' && device.label.startsWith('HD USB Camera'))
+                    (device.kind === 'videoinput')
                 );
 
             const addedDevices = devices.filter(currentDevice =>
