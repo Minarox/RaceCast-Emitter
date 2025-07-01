@@ -171,7 +171,6 @@ export const startBrowser = async (): Promise<void> => {
         }
 
         const checkTracks = async () => {
-            console.log(await navigator.mediaDevices.enumerateDevices());
             const devices = (await navigator.mediaDevices.enumerateDevices())
                 .filter(device =>
                     (device.kind === 'audioinput' && device.label.endsWith('Analog Stereo')) ||
