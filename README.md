@@ -6,7 +6,7 @@
     <img src="https://avatars.githubusercontent.com/u/71065703" alt="Logo" width="auto" height="80" style="border-radius: 8px">
 </a>
 
-<h3 align="center">RaceCast-Emitter</h3>
+<h3 align="center">RaceCast</h3>
 
 ![Go Version](https://img.shields.io/github/go-mod/go-version/Minarox/RaceCast-Emitter?label=Go)&nbsp;
 ![Project License](https://img.shields.io/github/license/Minarox/RaceCast-Emitter?label=Licence)
