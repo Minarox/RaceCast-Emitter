@@ -10,6 +10,12 @@ let mpuProcess: ChildProcessWithoutNullStreams | null = null;
 let temperature: number | null = null;
 let cleanUpCalled: boolean = false;
 
+/**
+ * Clean up function to handle process exit and errors.
+ *
+ * @param {any} error - The error object if an error occurred.
+ * @returns {Promise<void>} - A promise that resolves when the cleanup is complete.
+ */
 async function cleanUp(error: any): Promise<void> {
     if (cleanUpCalled) {
         return
@@ -20,11 +26,13 @@ async function cleanUp(error: any): Promise<void> {
         logger.error(error.toString());
     }
 
+    // Kill MPU script if it's running
     if (mpuProcess !== null) {
         logger.verbose("Kill MPU script...");
         mpuProcess.kill();
     }
 
+    // Close the browser
     await closeBrowser();
 
     logger.verbose("Exit...");
@@ -36,11 +44,22 @@ async function cleanUp(error: any): Promise<void> {
         process.on(type, cleanUp);
     });
 
+/**
+ * Parses a value to a number.
+ *
+ * @param {unknown} value - The value to parse.
+ * @returns {number | null} - Returns the parsed number or null if the value is not a valid number.
+ */
 function parseNumber(value: unknown): number | null {
     const result = Number(value ?? undefined)
     return isNaN(result) ? null : result
 }
 
+/**
+ * Updates LiveKit room metadata with the latest data (Modem, GPS, MPU).
+ *
+ * @returns {Promise<void>} - A promise that resolves when the update is complete.
+ */
 async function updateEmitterInfo(): Promise<void> {
     logger.debug("Get modem info...");
 
@@ -64,6 +83,11 @@ async function updateEmitterInfo(): Promise<void> {
     }
 }
 
+/**
+ * Starts the MPU script to read temperature data.
+ *
+ * @returns {void}
+ */
 function startMPU(): void {
     if (mpuProcess !== null) {
         return;

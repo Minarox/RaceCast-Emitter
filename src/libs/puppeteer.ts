@@ -11,10 +11,11 @@ const __filename: string = fileURLToPath(import.meta.url);
 const __dirname: string = dirname(__filename);
 let browser: Browser | null = null;
 
-export function getEnv(name: string): string {
-    return process.env[name] || '';
-}
-
+/**
+ * Closes the Puppeteer browser instance if it is open.
+ *
+ * @returns {Promise<void>} - A promise that resolves when the browser is closed.
+ */
 export async function closeBrowser(): Promise<void> {
     if (browser) {
         logger.verbose("Closing browser...");
@@ -23,6 +24,11 @@ export async function closeBrowser(): Promise<void> {
     }
 }
 
+/**
+ * Starts the Puppeteer browser and sets up the LiveKit client.
+ *
+ * @returns {Promise<void>} - A promise that resolves when the browser is started and the page is set up.
+ */
 export const startBrowser = async (): Promise<void> => {
     logger.info('Starting browser...');
 
@@ -45,6 +51,8 @@ export const startBrowser = async (): Promise<void> => {
             '--ash-no-nudges',
             '--no-first-run',
             '--disable-features=Translate',
+            '--disable-features=WebRtcPipeWireCamera',
+            '--enable-features=VaapiVideoEncoder,VaapiVideoDecodeLinuxGL',
             '--no-default-browser-check',
             '--allow-chrome-scheme-url',
             '--use-fake-ui-for-media-stream',
@@ -62,7 +70,7 @@ export const startBrowser = async (): Promise<void> => {
     await page.goto(HTTP_URL);
     await page.addScriptTag({ content: fs.readFileSync(`${__dirname}/livekit-client.umd.min.js`, 'utf8') });
     await page.exposeFunction('getLiveKitToken', getLiveKitToken);
-    await page.exposeFunction('getEnv', getEnv);
+    await page.exposeFunction('getEnv', (envKey: string): string => { return process.env[envKey] || '' });
     await page.exposeFunction('logWarn', (message: string) => { logger.warn(message) });
     await page.exposeFunction('logInfo', (message: string) => { logger.info(message) });
     await page.exposeFunction('logDebug', (message: string) => { logger.debug(message) });
@@ -166,7 +174,7 @@ export const startBrowser = async (): Promise<void> => {
             const devices = (await navigator.mediaDevices.enumerateDevices())
                 .filter(device =>
                     (device.kind === 'audioinput' && device.label.endsWith('Analog Stereo')) ||
-                    (device.kind === 'videoinput' && device.label.endsWith('(V4L2)'))
+                    (device.kind === 'videoinput')
                 );
 
             const addedDevices = devices.filter(currentDevice =>

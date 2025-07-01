@@ -1,7 +1,8 @@
 import colors from "colors";
 import { config, createLogger, format, transports } from "winston";
 
-const consoleFormat = format.printf(({ level, message }): any => {
+// Custom console format for Winston logger that includes colors and timestamps.
+const consoleFormat = format.printf(({ level, message }): string => {
     const color: string = config.npm.colors[level] as string;
     const bgColor: string = `bg${color.slice(0, 1).toUpperCase()}${color.slice(1)}`;
     const status: string = colors.bold((colors as any)[bgColor](` ${level.toUpperCase()} `));
@@ -9,6 +10,7 @@ const consoleFormat = format.printf(({ level, message }): any => {
     return `[${new Date().toLocaleString('fr-FR', { timeZone: 'UTC' })}] ${status} ${message}`;
 });
 
+// Custom file format for Winston logger that outputs log messages in JSON format.
 const fileFormat = format.printf(({ level, message }): string => {
     return JSON.stringify({
         timestamp: new Date().toLocaleString('fr-FR', { timeZone: 'UTC' }),
@@ -17,6 +19,7 @@ const fileFormat = format.printf(({ level, message }): string => {
     })
 })
 
+// Logger instance using Winston with console and file transports.
 export const logger = createLogger({
     level: process.env.LOG_LEVEL || "info",
     silent: process.env.NODE_ENV === "test",
