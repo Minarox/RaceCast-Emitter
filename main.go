@@ -110,6 +110,18 @@ func parseSpeed(nmea []string) *float32 {
 	return nil
 }
 
+func parsePrecision(nmea []string) (*float32, *float32) {
+	for _, line := range nmea {
+		if strings.HasPrefix(line, "$GPGGA") {
+			parts := strings.Split(line, ",")
+			if len(parts) > 8 {
+				return parseFloat32(parts[7]), parseFloat32(parts[8])
+			}
+		}
+	}
+	return nil, nil
+}
+
 func roomMetadataUpdater() {
 	go mpuTemperatureUpdater()
 
@@ -157,6 +169,7 @@ func roomMetadataUpdater() {
 		lat := parseFloat32(gps.Latitude)
 		alt := parseFloat32(gps.Altitude)
 		speed := parseSpeed(gps.NMEA)
+		sat, hdop := parsePrecision(gps.NMEA)
 
 		// Compute average temperature
 		var sum float32
@@ -177,6 +190,8 @@ func roomMetadataUpdater() {
 			"lat":    lat,
 			"alt":    alt,
 			"speed":  speed,
+			"sat":    sat,
+			"hdop":   hdop,
 			"temp":   averageTemperature,
 		}
 
