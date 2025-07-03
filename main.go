@@ -130,21 +130,21 @@ func roomMetadataUpdater() {
 		sugar.Fatalw("Failed to get modem ID.", "details", err)
 	}
 
-	_, err = exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` --location-enable-gps-raw --location-enable-gps-nmea`).Output()
+	_, err = exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` --location-enable-gps-raw --location-enable-gps-nmea`).Output()
 	if err != nil {
 		sugar.Errorw("Failed to enable GPS.", "details", err)
 	}
 
 	// Connect to LiveKit server
 	roomClient := lksdk.NewRoomServiceClient(
-		"https://" + os.Getenv("LIVEKIT_DOMAIN"),
+		"https://"+os.Getenv("LIVEKIT_DOMAIN"),
 		os.Getenv("LIVEKIT_API_KEY"),
 		os.Getenv("LIVEKIT_API_SECRET"),
 	)
 
 	for {
 		// Parse modem data
-		modemOutput, _ := exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` -J`).Output()
+		modemOutput, _ := exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` -J`).Output()
 
 		var modem Modem
 		if err := json.Unmarshal(modemOutput, &modem); err != nil {
@@ -156,7 +156,7 @@ func roomMetadataUpdater() {
 		signal := parseSignalQuality(modem.Modem.Generic.SignalQuality.Value)
 
 		// Parse location data
-		locationOutput, _ := exec.Command("sh", "-c", `mmcli -m ` + string(modemID) + ` --location-get -J`).Output()
+		locationOutput, _ := exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` --location-get -J`).Output()
 
 		var location Modem
 		if err := json.Unmarshal(locationOutput, &location); err != nil {
@@ -165,11 +165,11 @@ func roomMetadataUpdater() {
 		}
 
 		gps := location.Modem.Location.GPS
-		long := parseFloat32(gps.Longitude)
-		lat := parseFloat32(gps.Latitude)
-		alt := parseFloat32(gps.Altitude)
+		longitude := parseFloat32(gps.Longitude)
+		latitude := parseFloat32(gps.Latitude)
+		altitude := parseFloat32(gps.Altitude)
 		speed := parseSpeed(gps.NMEA)
-		sat, hdop := parsePrecision(gps.NMEA)
+		satellites, hdop := parsePrecision(gps.NMEA)
 
 		// Compute average temperature
 		var sum float32
@@ -186,11 +186,11 @@ func roomMetadataUpdater() {
 		metadata := map[string]any{
 			"tech":   tech,
 			"signal": signal,
-			"long":   long,
-			"lat":    lat,
-			"alt":    alt,
+			"long":   longitude,
+			"lat":    latitude,
+			"alt":    altitude,
 			"speed":  speed,
-			"sat":    sat,
+			"sat":    satellites,
 			"hdop":   hdop,
 			"temp":   averageTemperature,
 		}
@@ -224,8 +224,8 @@ func roomMetadataUpdater() {
 
 func downloadLiveKitClient() {
 	// Download the LiveKit client library if not already present
-	if _, err := os.Stat("livekit-client@"+livekitClientVersion+".umd.min.js"); os.IsNotExist(err) {
-		sugar.Info("Downloading LiveKit client library ("+livekitClientVersion+")...")
+	if _, err := os.Stat("livekit-client@" + livekitClientVersion + ".umd.min.js"); os.IsNotExist(err) {
+		sugar.Info("Downloading LiveKit client library (" + livekitClientVersion + ")...")
 
 		cmd := exec.Command("curl", "-o", "livekit-client@"+livekitClientVersion+".umd.min.js", "https://cdn.jsdelivr.net/npm/livekit-client@"+livekitClientVersion+"/dist/livekit-client.umd.min.js")
 		if err := cmd.Run(); err != nil {
@@ -287,7 +287,7 @@ func publishStreams() {
 	page, _ := browser.Page(proto.TargetCreateTarget{})
 
 	// Inject livekit-client.umd.min.js into the page
-	livekitScriptBytes, err := os.ReadFile("livekit-client@"+livekitClientVersion+".umd.min.js")
+	livekitScriptBytes, err := os.ReadFile("livekit-client@" + livekitClientVersion + ".umd.min.js")
 	if err != nil {
 		sugar.Fatalw("Failed to read LiveKit client library.", "details", err)
 	}
@@ -411,13 +411,13 @@ func main() {
 	config := zap.NewProductionConfig()
 	config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 	config.OutputPaths = []string{"stdout", "app.log"}
-    logger, err := config.Build()
+	logger, err := config.Build()
 
-    if err != nil {
-        log.Fatalf("Failed to build logger: %v", err)
-    }
+	if err != nil {
+		log.Fatalf("Failed to build logger: %v", err)
+	}
 
-    sugar = logger.Sugar()
+	sugar = logger.Sugar()
 	sugar.Debugw("Launching program.", "process_id", os.Getpid())
 
 	// Loading environment variables from .env file
