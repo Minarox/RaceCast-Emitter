@@ -29,6 +29,7 @@ import (
 var sugar *zap.SugaredLogger
 var temperatureReadings [32]float32
 var oldMetadata any
+var livekitClientVersion = "2.15.2"
 
 type Modem struct {
 	Modem struct {
@@ -208,10 +209,10 @@ func roomMetadataUpdater() {
 
 func downloadLiveKitClient() {
 	// Download the LiveKit client library if not already present
-	if _, err := os.Stat("livekit-client.umd.min.js"); os.IsNotExist(err) {
-		sugar.Info("Downloading LiveKit client library...")
+	if _, err := os.Stat("livekit-client@"+livekitClientVersion+".umd.min.js"); os.IsNotExist(err) {
+		sugar.Info("Downloading LiveKit client library ("+livekitClientVersion+")...")
 
-		cmd := exec.Command("curl", "-o", "livekit-client.umd.min.js", "https://cdn.jsdelivr.net/npm/livekit-client@2.13.6/dist/livekit-client.umd.min.js")
+		cmd := exec.Command("curl", "-o", "livekit-client@"+livekitClientVersion+".umd.min.js", "https://cdn.jsdelivr.net/npm/livekit-client@"+livekitClientVersion+"/dist/livekit-client.umd.min.js")
 		if err := cmd.Run(); err != nil {
 			sugar.Fatalw("Failed to download LiveKit client library.", "details", err)
 		}
@@ -271,12 +272,12 @@ func publishStreams() {
 	page, _ := browser.Page(proto.TargetCreateTarget{})
 
 	// Inject livekit-client.umd.min.js into the page
-	scriptBytes, err := os.ReadFile("livekit-client.umd.min.js")
+	livekitScriptBytes, err := os.ReadFile("livekit-client@"+livekitClientVersion+".umd.min.js")
 	if err != nil {
 		sugar.Fatalw("Failed to read LiveKit client library.", "details", err)
 	}
 	proto.PageAddScriptToEvaluateOnNewDocument{
-		Source: string(scriptBytes),
+		Source: string(livekitScriptBytes),
 	}.Call(page)
 
 	page.MustExpose("env", func(v gson.JSON) (any, error) {
