@@ -3,7 +3,7 @@ module github.com/Minarox/RaceCast-Emitter
 go 1.24.4
 
 require (
-	github.com/livekit/protocol v1.39.0
+	github.com/livekit/protocol v1.39.3
 	github.com/ysmood/gson v0.7.3
 	go.uber.org/zap v1.27.0
 )
