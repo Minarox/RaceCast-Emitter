@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"io/fs"
 	"log"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -50,11 +53,156 @@ type Modem struct {
 	} `json:"modem"`
 }
 
+func systemStateReader() (*float32, *float32, *float32, *float32) {
+	// System load
+	var load *float32 = nil
+	loadData, err := exec.Command("bash", "-c", `awk -v RS="" '{print 100-($5*100)/($2+$3+$4+$5+$6+$7+$8)}' <(head -n1 /proc/stat)`).Output()
+	if err != nil {
+		sugar.Errorw("Failed to read system load.", "details", err)
+		return nil, nil, nil, nil
+	}
+	loadStr := strings.TrimSpace(string(loadData))
+	loadValue, err := strconv.ParseFloat(loadStr, 32)
+	if err != nil {
+		sugar.Errorw("Failed to parse system load.", "details", err)
+		return nil, nil, nil, nil
+	}
+
+	loadFloat := float32(loadValue)
+	loadFloat = float32(math.Round(float64(loadFloat*100)) / 100)
+	load = &loadFloat
+
+	// CPU temperature
+	var temperature *float32 = nil
+	temperatureData, err := exec.Command("sh", "-c", `vcgencmd measure_temp | cut -d "=" -f2 | cut -d "'" -f1`).Output()
+	if err != nil {
+		sugar.Errorw("Failed to read system temperature.", "details", err)
+		return nil, nil, nil, nil
+	}
+
+	temperatureStr := strings.TrimSpace(string(temperatureData))
+	temperatureValue, err := strconv.ParseFloat(temperatureStr, 32)
+	if err == nil {
+		value := float32(temperatureValue)
+		temperature = &value
+	}
+
+
+	// Fan speed
+	sysDevicesPath := "/sys/devices/platform/cooling_fan"
+	var fanInputFile string
+	var fan *float32 = nil
+
+	filepath.WalkDir(sysDevicesPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Name() == "fan1_input" {
+			fanInputFile = path
+			return filepath.SkipDir
+		}
+		return nil
+	})
+
+	if fanInputFile != "" {
+		data, err := os.ReadFile(fanInputFile)
+		if err == nil {
+			dataStr := strings.TrimSpace(string(data))
+
+			value, err := strconv.ParseFloat(dataStr, 32)
+			if err == nil {
+				rpm := float32(value)
+				fan = &rpm
+			}
+		}
+	}
+
+	// Total power consumption
+	states, err := exec.Command("sh", "-c", `vcgencmd pmic_read_adc`).Output()
+	if err != nil {
+		sugar.Errorw("Failed to read system power consumption.", "details", err)
+		return nil, nil, nil, nil
+	}
+
+	var currents = make(map[string]float32)
+	var voltages = make(map[string]float32)
+
+	lines := strings.SplitSeq(string(states), "\n")
+	for line := range lines {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "=")
+		label := strings.Fields(parts[0])[0]
+		label = label[:len(label)-2]
+
+		if strings.HasSuffix(parts[1], "A") {
+			parts[1] = parts[1][:len(parts[1])-1]
+			current, err := strconv.ParseFloat(parts[1], 32)
+			if err != nil {
+				sugar.Warnw("Failed to parse current value.", "details", err)
+				continue
+			}
+			currents[label] = float32(current)
+		}
+
+		if strings.HasSuffix(parts[1], "V") {
+			parts[1] = parts[1][:len(parts[1])-1]
+			voltage, err := strconv.ParseFloat(parts[1], 32)
+			if err != nil {
+				sugar.Warnw("Failed to parse voltage value.", "details", err)
+				continue
+			}
+			voltages[label] = float32(voltage)
+		}
+	}
+
+	var watts float32
+	for label, current := range currents {
+		if voltage, ok := voltages[label]; ok {
+			watts += current * voltage
+		}
+	}
+	watts = float32(int(watts*100)) / 100
+
+	return &watts, temperature, fan, load
+}
+
+func upsStateReader() (*float32, *float32) {
+	i2cClient, err := i2c.NewI2C(0x36, 1)
+	if err != nil {
+		sugar.Fatalw("Failed to create I2C client for UPS.", "details", err)
+	}
+	defer i2cClient.Close()
+
+	voltageBytes, _, err := i2cClient.ReadRegBytes(2, 2)
+	if err != nil {
+		sugar.Errorw("Failed to read voltage from UPS.", "details", err)
+		return nil, nil
+	}
+	voltageRaw := binary.LittleEndian.Uint16(voltageBytes)
+	voltageSwapped := (voltageRaw>>8)&0xFF | (voltageRaw&0xFF)<<8
+	voltage := float32(voltageSwapped) * 1.25 / 1000 / 16
+	voltage = float32(math.Round(float64(voltage*100)) / 100)
+
+	capacityBytes, _, err := i2cClient.ReadRegBytes(4, 2)
+	if err != nil {
+		sugar.Errorw("Failed to read capacity from UPS.", "details", err)
+		return &voltage, nil
+	}
+	capacityRaw := binary.LittleEndian.Uint16(capacityBytes)
+	capacitySwapped := (capacityRaw>>8)&0xFF | (capacityRaw&0xFF)<<8
+	capacity := float32(capacitySwapped) / 256
+	capacity = float32(math.Round(float64(capacity*100)) / 100)
+
+	return &voltage, &capacity
+}
+
 func mpuTemperatureUpdater() {
-	logger.ChangePackageLogLevel("i2c", logger.LogLevel(sugar.Level()))
 	i2cClient, err := i2c.NewI2C(0x68, 1)
 	if err != nil {
-		sugar.Fatalw("Failed to create I2C client.", "details", err)
+		sugar.Fatalw("Failed to create I2C client for MPU.", "details", err)
 	}
 	defer i2cClient.Close()
 
@@ -66,6 +214,8 @@ func mpuTemperatureUpdater() {
 		buf, _, err := i2cClient.ReadRegBytes(0x41, 2)
 		if err != nil {
 			sugar.Errorw("Failed to read temperature from MPU6050.", "details", err)
+			time.Sleep(time.Millisecond * 1000)
+			continue
 		}
 
 		rawTemp := int16(binary.BigEndian.Uint16(buf))
@@ -123,6 +273,7 @@ func parsePrecision(nmea []string) (*float32, *float32) {
 }
 
 func roomMetadataUpdater() {
+	logger.ChangePackageLogLevel("i2c", logger.LogLevel(sugar.Level()))
 	go mpuTemperatureUpdater()
 
 	modemID, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
@@ -171,6 +322,12 @@ func roomMetadataUpdater() {
 		speed := parseSpeed(gps.NMEA)
 		satellites, hdop := parsePrecision(gps.NMEA)
 
+		// Read system state
+		watts, temperature, fan, load := systemStateReader()
+
+		// Read UPS state
+		voltage, capacity := upsStateReader()
+
 		// Compute average temperature
 		var sum float32
 		var count int
@@ -184,15 +341,29 @@ func roomMetadataUpdater() {
 
 		// Create metadata payload
 		metadata := map[string]any{
-			"tech":   tech,
-			"signal": signal,
-			"long":   longitude,
-			"lat":    latitude,
-			"alt":    altitude,
-			"speed":  speed,
-			"sat":    satellites,
-			"hdop":   hdop,
-			"temp":   averageTemperature,
+			"modem": map[string]any{
+				"tech":   tech,
+				"signal": signal,
+			},
+			"location": map[string]any{
+				"long":  longitude,
+				"lat":   latitude,
+				"alt":   altitude,
+				"speed": speed,
+				"sat":   satellites,
+				"hdop":  hdop,
+			},
+			"system": map[string]any{
+				"watts":       watts,
+				"temperature": temperature,
+				"fan":         fan,
+				"load":        load,
+			},
+			"ups": map[string]any{
+				"voltage":  voltage,
+				"capacity": capacity,
+			},
+			"temp": averageTemperature,
 		}
 
 		// Check if metadata has changed
