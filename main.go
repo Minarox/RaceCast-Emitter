@@ -54,40 +54,6 @@ type Modem struct {
 }
 
 func systemStateReader() (*float32, *float32, *float32, *float32) {
-	// System load
-	var load *float32 = nil
-	loadData, err := exec.Command("bash", "-c", `awk -v RS="" '{print 100-($5*100)/($2+$3+$4+$5+$6+$7+$8)}' <(head -n1 /proc/stat)`).Output()
-	if err != nil {
-		sugar.Errorw("Failed to read system load.", "details", err)
-		return nil, nil, nil, nil
-	}
-	loadStr := strings.TrimSpace(string(loadData))
-	loadValue, err := strconv.ParseFloat(loadStr, 32)
-	if err != nil {
-		sugar.Errorw("Failed to parse system load.", "details", err)
-		return nil, nil, nil, nil
-	}
-
-	loadFloat := float32(loadValue)
-	loadFloat = float32(math.Round(float64(loadFloat*100)) / 100)
-	load = &loadFloat
-
-	// CPU temperature
-	var temperature *float32 = nil
-	temperatureData, err := exec.Command("sh", "-c", `vcgencmd measure_temp | cut -d "=" -f2 | cut -d "'" -f1`).Output()
-	if err != nil {
-		sugar.Errorw("Failed to read system temperature.", "details", err)
-		return nil, nil, nil, nil
-	}
-
-	temperatureStr := strings.TrimSpace(string(temperatureData))
-	temperatureValue, err := strconv.ParseFloat(temperatureStr, 32)
-	if err == nil {
-		value := float32(temperatureValue)
-		temperature = &value
-	}
-
-
 	// Fan speed
 	sysDevicesPath := "/sys/devices/platform/cooling_fan"
 	var fanInputFile string
@@ -117,86 +83,117 @@ func systemStateReader() (*float32, *float32, *float32, *float32) {
 		}
 	}
 
+	// System load
+	var load *float32 = nil
+	loadData, err := exec.Command("bash", "-c", `awk -v RS="" '{print 100-($5*100)/($2+$3+$4+$5+$6+$7+$8)}' <(head -n1 /proc/stat)`).Output()
+	if err != nil {
+		sugar.Errorw("Failed to read system load.", "details", err)
+	} else {
+		loadStr := strings.TrimSpace(string(loadData))
+		loadValue, err := strconv.ParseFloat(loadStr, 32)
+		if err != nil {
+			sugar.Errorw("Failed to parse system load.", "details", err)
+		} else {
+			loadFloat := float32(loadValue)
+			loadFloat = float32(math.Round(float64(loadFloat*100)) / 100)
+			load = &loadFloat
+		}
+	}
+
+	// CPU temperature
+	var temperature *float32 = nil
+	temperatureData, err := exec.Command("sh", "-c", `vcgencmd measure_temp | cut -d "=" -f2 | cut -d "'" -f1`).Output()
+	if err != nil {
+		sugar.Errorw("Failed to read system temperature.", "details", err)
+	} else {
+		temperatureStr := strings.TrimSpace(string(temperatureData))
+		temperatureValue, err := strconv.ParseFloat(temperatureStr, 32)
+		if err == nil {
+			value := float32(temperatureValue)
+			temperature = &value
+		}
+	}
+
 	// Total power consumption
+	var watts *float32 = nil
 	states, err := exec.Command("sh", "-c", `vcgencmd pmic_read_adc`).Output()
 	if err != nil {
 		sugar.Errorw("Failed to read system power consumption.", "details", err)
-		return nil, nil, nil, nil
-	}
+	} else {
+		var currents = make(map[string]float32)
+		var voltages = make(map[string]float32)
 
-	var currents = make(map[string]float32)
-	var voltages = make(map[string]float32)
-
-	lines := strings.SplitSeq(string(states), "\n")
-	for line := range lines {
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, "=")
-		label := strings.Fields(parts[0])[0]
-		label = label[:len(label)-2]
-
-		if strings.HasSuffix(parts[1], "A") {
-			parts[1] = parts[1][:len(parts[1])-1]
-			current, err := strconv.ParseFloat(parts[1], 32)
-			if err != nil {
-				sugar.Warnw("Failed to parse current value.", "details", err)
+		lines := strings.SplitSeq(string(states), "\n")
+		for line := range lines {
+			if line == "" {
 				continue
 			}
-			currents[label] = float32(current)
-		}
 
-		if strings.HasSuffix(parts[1], "V") {
-			parts[1] = parts[1][:len(parts[1])-1]
-			voltage, err := strconv.ParseFloat(parts[1], 32)
-			if err != nil {
-				sugar.Warnw("Failed to parse voltage value.", "details", err)
-				continue
+			parts := strings.Split(line, "=")
+			label := strings.Fields(parts[0])[0]
+			label = label[:len(label)-2]
+
+			if strings.HasSuffix(parts[1], "A") {
+				parts[1] = parts[1][:len(parts[1])-1]
+				current, err := strconv.ParseFloat(parts[1], 32)
+				if err != nil {
+					sugar.Warnw("Failed to parse current value.", "details", err)
+					continue
+				}
+				currents[label] = float32(current)
 			}
-			voltages[label] = float32(voltage)
+
+			if strings.HasSuffix(parts[1], "V") {
+				parts[1] = parts[1][:len(parts[1])-1]
+				voltage, err := strconv.ParseFloat(parts[1], 32)
+				if err != nil {
+					sugar.Warnw("Failed to parse voltage value.", "details", err)
+					continue
+				}
+				voltages[label] = float32(voltage)
+			}
 		}
+
+		var wattsValue float32
+		for label, current := range currents {
+			if voltage, ok := voltages[label]; ok {
+				wattsValue += current * voltage
+			}
+		}
+		wattsValue = float32(int(wattsValue*100)) / 100
+		watts = &wattsValue
 	}
 
-	var watts float32
-	for label, current := range currents {
-		if voltage, ok := voltages[label]; ok {
-			watts += current * voltage
-		}
-	}
-	watts = float32(int(watts*100)) / 100
-
-	return &watts, temperature, fan, load
+	return load, temperature, fan, watts
 }
 
-func upsStateReader() (*float32, *float32) {
-	i2cClient, err := i2c.NewI2C(0x36, 1)
-	if err != nil {
-		sugar.Fatalw("Failed to create I2C client for UPS.", "details", err)
-	}
-	defer i2cClient.Close()
+func upsStateReader(ups *i2c.I2C) (*float32, *float32) {
+	var voltage *float32 = nil
+	var capacity *float32 = nil
 
-	voltageBytes, _, err := i2cClient.ReadRegBytes(2, 2)
+	voltageBytes, _, err := ups.ReadRegBytes(2, 2)
 	if err != nil {
 		sugar.Errorw("Failed to read voltage from UPS.", "details", err)
-		return nil, nil
+	} else {
+		voltageRaw := binary.LittleEndian.Uint16(voltageBytes)
+		voltageSwapped := (voltageRaw>>8)&0xFF | (voltageRaw&0xFF)<<8
+		voltageValue := float32(voltageSwapped) * 1.25 / 1000 / 16
+		voltageValue = float32(math.Round(float64(voltageValue*100)) / 100)
+		voltage = &voltageValue
 	}
-	voltageRaw := binary.LittleEndian.Uint16(voltageBytes)
-	voltageSwapped := (voltageRaw>>8)&0xFF | (voltageRaw&0xFF)<<8
-	voltage := float32(voltageSwapped) * 1.25 / 1000 / 16
-	voltage = float32(math.Round(float64(voltage*100)) / 100)
 
-	capacityBytes, _, err := i2cClient.ReadRegBytes(4, 2)
+	capacityBytes, _, err := ups.ReadRegBytes(4, 2)
 	if err != nil {
 		sugar.Errorw("Failed to read capacity from UPS.", "details", err)
-		return &voltage, nil
+	} else {
+		capacityRaw := binary.LittleEndian.Uint16(capacityBytes)
+		capacitySwapped := (capacityRaw>>8)&0xFF | (capacityRaw&0xFF)<<8
+		capacityValue := float32(capacitySwapped) / 256
+		capacityValue = float32(math.Round(float64(capacityValue*100)) / 100)
+		capacity = &capacityValue
 	}
-	capacityRaw := binary.LittleEndian.Uint16(capacityBytes)
-	capacitySwapped := (capacityRaw>>8)&0xFF | (capacityRaw&0xFF)<<8
-	capacity := float32(capacitySwapped) / 256
-	capacity = float32(math.Round(float64(capacity*100)) / 100)
 
-	return &voltage, &capacity
+	return voltage, capacity
 }
 
 func mpuTemperatureUpdater() {
@@ -276,6 +273,12 @@ func roomMetadataUpdater() {
 	logger.ChangePackageLogLevel("i2c", logger.LogLevel(sugar.Level()))
 	go mpuTemperatureUpdater()
 
+	ups, err := i2c.NewI2C(0x36, 1)
+	if err != nil {
+		sugar.Fatalw("Failed to create I2C client for UPS.", "details", err)
+	}
+	defer ups.Close()
+
 	modemID, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
 	if err != nil {
 		sugar.Fatalw("Failed to get modem ID.", "details", err)
@@ -323,10 +326,10 @@ func roomMetadataUpdater() {
 		satellites, hdop := parsePrecision(gps.NMEA)
 
 		// Read system state
-		watts, temperature, fan, load := systemStateReader()
+		load, temperature, fan, watts := systemStateReader()
 
 		// Read UPS state
-		voltage, capacity := upsStateReader()
+		voltage, capacity := upsStateReader(ups)
 
 		// Compute average temperature
 		var sum float32
