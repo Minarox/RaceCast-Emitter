@@ -581,7 +581,10 @@ func main() {
 	// Loading logger
 	config := zap.NewProductionConfig()
 	config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	config.OutputPaths = []string{"stdout", "app.log"}
+	config.OutputPaths = []string{
+		"stdout",
+		"logs/" + time.Now().Format(time.DateOnly) + ".log",
+	}
 	logger, err := config.Build()
 
 	if err != nil {
