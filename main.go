@@ -349,7 +349,7 @@ func roomMetadataUpdater() {
 				"signal": signal,
 			},
 			"location": map[string]any{
-				"long":  longitude,
+				"lon":   longitude,
 				"lat":   latitude,
 				"alt":   altitude,
 				"speed": speed,
@@ -357,14 +357,14 @@ func roomMetadataUpdater() {
 				"hdop":  hdop,
 			},
 			"system": map[string]any{
-				"watts":       watts,
-				"temperature": temperature,
-				"fan":         fan,
-				"load":        load,
+				"power": watts,
+				"temp":  temperature,
+				"fan":   fan,
+				"load":  load,
 			},
 			"ups": map[string]any{
-				"voltage":  voltage,
-				"capacity": capacity,
+				"volt": voltage,
+				"capa": capacity,
 			},
 			"temp": averageTemperature,
 		}
