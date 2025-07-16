@@ -53,11 +53,11 @@ type Modem struct {
 	} `json:"modem"`
 }
 
-func systemStateReader() (*float32, *float32, *float32, *float32) {
+func systemStateReader() (*float32, *float32, *int, *float32) {
 	// Fan speed
 	sysDevicesPath := "/sys/devices/platform/cooling_fan"
 	var fanInputFile string
-	var fan *float32 = nil
+	var fan *int = nil
 
 	filepath.WalkDir(sysDevicesPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -77,7 +77,7 @@ func systemStateReader() (*float32, *float32, *float32, *float32) {
 
 			value, err := strconv.ParseFloat(dataStr, 32)
 			if err == nil {
-				rpm := float32(value)
+				rpm := int(value)
 				fan = &rpm
 			}
 		}
@@ -85,18 +85,15 @@ func systemStateReader() (*float32, *float32, *float32, *float32) {
 
 	// System load
 	var load *float32 = nil
-	loadData, err := exec.Command("bash", "-c", `awk -v RS="" '{print 100-($5*100)/($2+$3+$4+$5+$6+$7+$8)}' <(head -n1 /proc/stat)`).Output()
+	loadData, err := exec.Command("bash", "-c", `LOADVAL5=$(awk '{ print $1; }' < /proc/loadavg); NUMCPUS=$(getconf _NPROCESSORS_ONLN); echo "scale=2; $LOADVAL5 * 100 / $NUMCPUS" | bc`).Output()
 	if err != nil {
 		sugar.Errorw("Failed to read system load.", "details", err)
 	} else {
 		loadStr := strings.TrimSpace(string(loadData))
 		loadValue, err := strconv.ParseFloat(loadStr, 32)
-		if err != nil {
-			sugar.Errorw("Failed to parse system load.", "details", err)
-		} else {
-			loadFloat := float32(loadValue)
-			loadFloat = float32(math.Round(float64(loadFloat*100)) / 100)
-			load = &loadFloat
+		if err == nil {
+			value := float32(loadValue)
+			load = &value
 		}
 	}
 
@@ -235,7 +232,7 @@ func parseFloat32(s string) *float32 {
 	return nil
 }
 
-func parseSignalQuality(s string) *int {
+func parseInt(s string) *int {
 	if s == "" {
 		return nil
 	}
@@ -257,12 +254,12 @@ func parseSpeed(nmea []string) *float32 {
 	return nil
 }
 
-func parsePrecision(nmea []string) (*float32, *float32) {
+func parsePrecision(nmea []string) (*int, *float32) {
 	for _, line := range nmea {
 		if strings.HasPrefix(line, "$GPGGA") {
 			parts := strings.Split(line, ",")
 			if len(parts) > 8 {
-				return parseFloat32(parts[7]), parseFloat32(parts[8])
+				return parseInt(parts[7]), parseFloat32(parts[8])
 			}
 		}
 	}
@@ -307,7 +304,7 @@ func roomMetadataUpdater() {
 		}
 
 		tech := modem.Modem.Generic.AccessTechnologies
-		signal := parseSignalQuality(modem.Modem.Generic.SignalQuality.Value)
+		signal := parseInt(modem.Modem.Generic.SignalQuality.Value)
 
 		// Parse location data
 		locationOutput, _ := exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` --location-get -J`).Output()
