@@ -1,5 +1,4 @@
 name: Go Build
-description: Build Go code on pull requests
 
 on:
     pull_request
