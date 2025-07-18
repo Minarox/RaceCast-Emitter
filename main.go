@@ -266,6 +266,104 @@ func parsePrecision(nmea []string) (*int, *float32) {
 	return nil, nil
 }
 
+func updateMetadata(roomClient *lksdk.RoomServiceClient, modemID []byte, ups *i2c.I2C) {
+	// Parse modem data
+	modemOutput, _ := exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` -J`).Output()
+
+	var modem Modem
+	if err := json.Unmarshal(modemOutput, &modem); err != nil {
+		sugar.Warnw("Error parsing modem data.", "details", err)
+		return
+	}
+
+	tech := modem.Modem.Generic.AccessTechnologies
+	signal := parseInt(modem.Modem.Generic.SignalQuality.Value)
+
+	// Parse location data
+	locationOutput, _ := exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` --location-get -J`).Output()
+
+	var location Modem
+	if err := json.Unmarshal(locationOutput, &location); err != nil {
+		sugar.Warnw("Error parsing location data.", "details", err)
+		return
+	}
+
+	gps := location.Modem.Location.GPS
+	longitude := parseFloat32(gps.Longitude)
+	latitude := parseFloat32(gps.Latitude)
+	altitude := parseFloat32(gps.Altitude)
+	speed := parseSpeed(gps.NMEA)
+	satellites, hdop := parsePrecision(gps.NMEA)
+
+	// Read system state
+	load, temperature, fan, watts := systemStateReader()
+
+	// Read UPS state
+	voltage, capacity := upsStateReader(ups)
+
+	// Compute average temperature
+	var sum float32
+	var count int
+	for _, t := range temperatureReadings {
+		if t != 0 {
+			sum += t
+			count++
+		}
+	}
+	averageTemperature := float32(int((sum/float32(count))*10)) / 10
+
+	// Create metadata payload
+	metadata := map[string]any{
+		"modem": map[string]any{
+			"tech":   tech,
+			"signal": signal,
+		},
+		"location": map[string]any{
+			"lon":   longitude,
+			"lat":   latitude,
+			"alt":   altitude,
+			"speed": speed,
+			"sat":   satellites,
+			"hdop":  hdop,
+		},
+		"system": map[string]any{
+			"power": watts,
+			"temp":  temperature,
+			"fan":   fan,
+			"load":  load,
+		},
+		"ups": map[string]any{
+			"volt": voltage,
+			"capa": capacity,
+			"charge": false,
+		},
+		"temp": averageTemperature,
+	}
+
+	// Check if metadata has changed
+	metadataJSON, _ := json.Marshal(metadata)
+	oldMetadataJSON, _ := json.Marshal(oldMetadata)
+	if oldMetadata == nil || sha256.Sum256(metadataJSON) != sha256.Sum256(oldMetadataJSON) {
+		oldMetadata = metadata
+
+		// Add current timestamp to metadata
+		payload := maps.Clone(metadata)
+		payload["timestamp"] = time.Now().Unix()
+		payloadJSON, _ := json.Marshal(payload)
+
+		sugar.Debugw("Updating room metadata.", "payload", string(payloadJSON))
+
+		// Update room metadata
+		go roomClient.UpdateRoomMetadata(
+			context.Background(),
+			&livekit.UpdateRoomMetadataRequest{
+				Room:     os.Getenv("LIVEKIT_ROOM"),
+				Metadata: string(payloadJSON),
+			},
+		)
+	}
+}
+
 func roomMetadataUpdater() {
 	logger.ChangePackageLogLevel("i2c", logger.LogLevel(sugar.Level()))
 	go mpuTemperatureUpdater()
@@ -294,101 +392,7 @@ func roomMetadataUpdater() {
 	)
 
 	for {
-		// Parse modem data
-		modemOutput, _ := exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` -J`).Output()
-
-		var modem Modem
-		if err := json.Unmarshal(modemOutput, &modem); err != nil {
-			sugar.Warnw("Error parsing modem data.", "details", err)
-			return
-		}
-
-		tech := modem.Modem.Generic.AccessTechnologies
-		signal := parseInt(modem.Modem.Generic.SignalQuality.Value)
-
-		// Parse location data
-		locationOutput, _ := exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` --location-get -J`).Output()
-
-		var location Modem
-		if err := json.Unmarshal(locationOutput, &location); err != nil {
-			sugar.Warnw("Error parsing location data.", "details", err)
-			return
-		}
-
-		gps := location.Modem.Location.GPS
-		longitude := parseFloat32(gps.Longitude)
-		latitude := parseFloat32(gps.Latitude)
-		altitude := parseFloat32(gps.Altitude)
-		speed := parseSpeed(gps.NMEA)
-		satellites, hdop := parsePrecision(gps.NMEA)
-
-		// Read system state
-		load, temperature, fan, watts := systemStateReader()
-
-		// Read UPS state
-		voltage, capacity := upsStateReader(ups)
-
-		// Compute average temperature
-		var sum float32
-		var count int
-		for _, t := range temperatureReadings {
-			if t != 0 {
-				sum += t
-				count++
-			}
-		}
-		averageTemperature := float32(int((sum/float32(count))*10)) / 10
-
-		// Create metadata payload
-		metadata := map[string]any{
-			"modem": map[string]any{
-				"tech":   tech,
-				"signal": signal,
-			},
-			"location": map[string]any{
-				"lon":   longitude,
-				"lat":   latitude,
-				"alt":   altitude,
-				"speed": speed,
-				"sat":   satellites,
-				"hdop":  hdop,
-			},
-			"system": map[string]any{
-				"power": watts,
-				"temp":  temperature,
-				"fan":   fan,
-				"load":  load,
-			},
-			"ups": map[string]any{
-				"volt": voltage,
-				"capa": capacity,
-			},
-			"temp": averageTemperature,
-		}
-
-		// Check if metadata has changed
-		metadataJSON, _ := json.Marshal(metadata)
-		oldMetadataJSON, _ := json.Marshal(oldMetadata)
-		if oldMetadata == nil || sha256.Sum256(metadataJSON) != sha256.Sum256(oldMetadataJSON) {
-			oldMetadata = metadata
-
-			// Add current timestamp to metadata
-			payload := maps.Clone(metadata)
-			payload["timestamp"] = time.Now().Unix()
-			payloadJSON, _ := json.Marshal(payload)
-
-			sugar.Debugw("Updating room metadata.", "payload", string(payloadJSON))
-
-			// Update room metadata
-			go roomClient.UpdateRoomMetadata(
-				context.Background(),
-				&livekit.UpdateRoomMetadataRequest{
-					Room:     os.Getenv("LIVEKIT_ROOM"),
-					Metadata: string(payloadJSON),
-				},
-			)
-		}
-
+		go updateMetadata(roomClient, modemID, ups)
 		time.Sleep(time.Second)
 	}
 }
@@ -516,9 +520,9 @@ func publishStreams() {
 						red: false,
 						dtx: true,
 						stopMicTrackOnMute: false,
-						/* audioPreset: {
-							maxBitrate: 36_000
-						} */
+						audioPreset: {
+							maxBitrate: 24_000
+						}
 					}
 				);
 			};
@@ -535,17 +539,18 @@ func publishStreams() {
 						source: LivekitClient.Track.Source.Camera,
 						degradationPreference: "maintain-framerate",
 						videoCodec: "VP8",
-						/* videoEncoding: {
+						videoEncoding: {
 							maxFramerate: 30,
-							maxBitrate: 2_500_000,
-						} */
+							maxBitrate: 600_000,
+						}
 					}
 				);
 			};
 
 			// Create audio and video tracks
 			const devices = (await navigator.mediaDevices.enumerateDevices())
-				.filter(device =>['audioinput', 'videoinput'].includes(device.kind) && device.deviceId !== 'default');
+				.filter(device =>['audioinput', 'videoinput'].includes(device.kind) && device.deviceId !== 'default')
+				.sort((a, b) => a.label.localeCompare(b.label));
 			const audioDevices = devices.filter(device => device.kind === 'audioinput');
 			const videoDevices = devices.filter(device => device.kind === 'videoinput');
 
@@ -558,17 +563,8 @@ func publishStreams() {
 						JSON.stringify({ name: track.trackName, type: track.kind })
 					);
 				})
-				.on(LivekitClient.RoomEvent.Connected, async () => {
-					await window.logInfo("Connected");
-				})
-				.on(LivekitClient.RoomEvent.Reconnecting, async () => {
-					await window.logWarn("Reconnecting...");
-				})
-				.on(LivekitClient.RoomEvent.Reconnected, async () => {
-					await window.logInfo("Reconnected");
-				})
-				.on(LivekitClient.RoomEvent.Disconnected, async () => {
-					await window.logWarn("Disconnected");
+				.on(LivekitClient.RoomEvent.ConnectionStateChanged, async (state) => {
+					await window.logInfo(state);
 				});
 
 			await room.connect(url, token);
