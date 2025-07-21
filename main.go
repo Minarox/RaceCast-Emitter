@@ -25,6 +25,7 @@ import (
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/warthog618/go-gpiocdev"
 	"github.com/ysmood/gson"
 	"go.uber.org/zap"
 )
@@ -193,6 +194,23 @@ func upsStateReader(ups *i2c.I2C) (*float32, *float32) {
 	return voltage, capacity
 }
 
+func upsChargingState() bool {
+	pin, err := gpiocdev.RequestLine("gpiochip0", 6, gpiocdev.AsInput)
+	if err != nil {
+		sugar.Errorw("Failed to request GPIO pin for UPS charging state.", "details", err)
+		return false
+	}
+	defer pin.Close()
+
+	val, err := pin.Value()
+	if err != nil {
+		sugar.Errorw("Failed to read GPIO pin value for UPS charging state.", "details", err)
+		return false
+	}
+
+	return val == 1
+}
+
 func mpuTemperatureUpdater() {
 	i2cClient, err := i2c.NewI2C(0x68, 1)
 	if err != nil {
@@ -297,6 +315,7 @@ func updateMetadata(roomClient *lksdk.RoomServiceClient, modemID []byte, ups *i2
 
 	// Read system state
 	load, temperature, fan, watts := systemStateReader()
+	charging := upsChargingState()
 
 	// Read UPS state
 	voltage, capacity := upsStateReader(ups)
@@ -333,9 +352,9 @@ func updateMetadata(roomClient *lksdk.RoomServiceClient, modemID []byte, ups *i2
 			"load":  load,
 		},
 		"ups": map[string]any{
-			"volt": voltage,
-			"capa": capacity,
-			"charge": false,
+			"volt":   voltage,
+			"capa":   capacity,
+			"charge": charging,
 		},
 		"temp": averageTemperature,
 	}
