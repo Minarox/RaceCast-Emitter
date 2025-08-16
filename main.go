@@ -88,7 +88,7 @@ func systemStateReader() (*float32, *float32, *int, *float32) {
 	var load *float32 = nil
 	loadData, err := exec.Command("bash", "-c", `LOADVAL5=$(awk '{ print $1; }' < /proc/loadavg); NUMCPUS=$(getconf _NPROCESSORS_ONLN); echo "scale=2; $LOADVAL5 * 100 / $NUMCPUS" | bc`).Output()
 	if err != nil {
-		sugar.Errorw("Failed to read system load.", "details", err)
+		sugar.Warnw("Failed to read system load.", "details", err)
 	} else {
 		loadStr := strings.TrimSpace(string(loadData))
 		loadValue, err := strconv.ParseFloat(loadStr, 32)
@@ -102,7 +102,7 @@ func systemStateReader() (*float32, *float32, *int, *float32) {
 	var temperature *float32 = nil
 	temperatureData, err := exec.Command("sh", "-c", `vcgencmd measure_temp | cut -d "=" -f2 | cut -d "'" -f1`).Output()
 	if err != nil {
-		sugar.Errorw("Failed to read system temperature.", "details", err)
+		sugar.Warnw("Failed to read system temperature.", "details", err)
 	} else {
 		temperatureStr := strings.TrimSpace(string(temperatureData))
 		temperatureValue, err := strconv.ParseFloat(temperatureStr, 32)
@@ -116,7 +116,7 @@ func systemStateReader() (*float32, *float32, *int, *float32) {
 	var watts *float32 = nil
 	states, err := exec.Command("sh", "-c", `vcgencmd pmic_read_adc`).Output()
 	if err != nil {
-		sugar.Errorw("Failed to read system power consumption.", "details", err)
+		sugar.Warnw("Failed to read system power consumption.", "details", err)
 	} else {
 		var currents = make(map[string]float32)
 		var voltages = make(map[string]float32)
@@ -171,7 +171,7 @@ func upsStateReader(ups *i2c.I2C) (*float32, *float32) {
 
 	voltageBytes, _, err := ups.ReadRegBytes(2, 2)
 	if err != nil {
-		sugar.Errorw("Failed to read voltage from UPS.", "details", err)
+		sugar.Warnw("Failed to read voltage from UPS.", "details", err)
 	} else {
 		voltageRaw := binary.LittleEndian.Uint16(voltageBytes)
 		voltageSwapped := (voltageRaw>>8)&0xFF | (voltageRaw&0xFF)<<8
@@ -182,7 +182,7 @@ func upsStateReader(ups *i2c.I2C) (*float32, *float32) {
 
 	capacityBytes, _, err := ups.ReadRegBytes(4, 2)
 	if err != nil {
-		sugar.Errorw("Failed to read capacity from UPS.", "details", err)
+		sugar.Warnw("Failed to read capacity from UPS.", "details", err)
 	} else {
 		capacityRaw := binary.LittleEndian.Uint16(capacityBytes)
 		capacitySwapped := (capacityRaw>>8)&0xFF | (capacityRaw&0xFF)<<8
@@ -197,14 +197,14 @@ func upsStateReader(ups *i2c.I2C) (*float32, *float32) {
 func upsChargingState() bool {
 	pin, err := gpiocdev.RequestLine("gpiochip0", 6, gpiocdev.AsInput)
 	if err != nil {
-		sugar.Errorw("Failed to request GPIO pin for UPS charging state.", "details", err)
+		sugar.Warnw("Failed to request GPIO pin for UPS charging state.", "details", err)
 		return false
 	}
 	defer pin.Close()
 
 	val, err := pin.Value()
 	if err != nil {
-		sugar.Errorw("Failed to read GPIO pin value for UPS charging state.", "details", err)
+		sugar.Warnw("Failed to read GPIO pin value for UPS charging state.", "details", err)
 		return false
 	}
 
@@ -225,7 +225,7 @@ func mpuTemperatureUpdater() {
 	for {
 		buf, _, err := i2cClient.ReadRegBytes(0x41, 2)
 		if err != nil {
-			sugar.Errorw("Failed to read temperature from MPU6050.", "details", err)
+			sugar.Warnw("Failed to read temperature from MPU6050.", "details", err)
 			time.Sleep(time.Millisecond * 1000)
 			continue
 		}
@@ -607,7 +607,7 @@ func main() {
 	}
 
 	sugar = logger.Sugar()
-	sugar.Debugw("Launching program.", "process_id", os.Getpid())
+	sugar.Infow("Launching program.", "process_id", os.Getpid())
 
 	// Loading environment variables from .env file
 	if godotenv.Load() != nil {
