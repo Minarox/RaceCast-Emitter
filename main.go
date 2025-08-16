@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"flag"
 	"io/fs"
 	"log"
 	"maps"
@@ -34,6 +35,11 @@ var sugar *zap.SugaredLogger
 var temperatureReadings [32]float32
 var oldMetadata any
 var livekitClientVersion = "2.15.2"
+var debug *bool
+var noMPU *bool
+var noUPS *bool
+var noMetadata *bool
+var noStream *bool
 
 type Modem struct {
 	Modem struct {
@@ -315,21 +321,36 @@ func updateMetadata(roomClient *lksdk.RoomServiceClient, modemID []byte, ups *i2
 
 	// Read system state
 	load, temperature, fan, watts := systemStateReader()
-	charging := upsChargingState()
+
+	var charging bool = false
+	if ups != nil {
+		charging = upsChargingState()
+	}
 
 	// Read UPS state
-	voltage, capacity := upsStateReader(ups)
+	var voltage *float32 = nil
+	var capacity *float32 = nil
+	if ups != nil {
+		volt, capa := upsStateReader(ups)
+		voltage = volt
+		capacity = capa
+	}
 
 	// Compute average temperature
-	var sum float32
-	var count int
-	for _, t := range temperatureReadings {
-		if t != 0 {
-			sum += t
-			count++
+	var sum float32 = 0
+	var count int = 0
+	var averageTemperature *float32 = nil
+	if !*noMPU {
+		for _, t := range temperatureReadings {
+			if t != 0 {
+				sum += t
+				count++
+			}
 		}
+
+		value := float32(int((sum/float32(count))*10)) / 10
+		averageTemperature = &value
 	}
-	averageTemperature := float32(int((sum/float32(count))*10)) / 10
 
 	// Create metadata payload
 	metadata := map[string]any{
@@ -385,13 +406,19 @@ func updateMetadata(roomClient *lksdk.RoomServiceClient, modemID []byte, ups *i2
 
 func roomMetadataUpdater() {
 	logger.ChangePackageLogLevel("i2c", logger.LogLevel(sugar.Level()))
-	go mpuTemperatureUpdater()
 
-	ups, err := i2c.NewI2C(0x36, 1)
-	if err != nil {
-		sugar.Fatalw("Failed to create I2C client for UPS.", "details", err)
+	if !*noMPU {
+		go mpuTemperatureUpdater()
 	}
-	defer ups.Close()
+
+	var ups *i2c.I2C = nil
+	if !*noUPS {
+		ups, err := i2c.NewI2C(0x36, 1)
+		if err != nil {
+			sugar.Fatalw("Failed to create I2C client for UPS.", "details", err)
+		}
+		defer ups.Close()
+	}
 
 	modemID, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
 	if err != nil {
@@ -593,9 +620,21 @@ func publishStreams() {
 }
 
 func main() {
+	debug = flag.Bool("debug", false, "Enable debug mode")
+	noMPU = flag.Bool("no-mpu", false, "Disable MPU temperature updater")
+	noUPS = flag.Bool("no-ups", false, "Disable UPS state reader")
+	noMetadata = flag.Bool("no-metadata", false, "Disable room metadata updater")
+	noStream = flag.Bool("no-stream", false, "Disable audio and video stream publishing")
+	flag.Parse()
+
 	// Loading logger
 	config := zap.NewProductionConfig()
-	config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	config.Level = zap.NewAtomicLevelAt(zap.ErrorLevel)
+
+	if *debug {
+		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	}
+
 	config.OutputPaths = []string{
 		"stdout",
 		"logs/" + time.Now().Format(time.DateOnly) + ".log",
@@ -615,8 +654,14 @@ func main() {
 	}
 
 	// Update room metadata with modem, location, and temperature data
-	go roomMetadataUpdater()
+	if !*noMetadata {
+		go roomMetadataUpdater()
+	}
 
 	// Publish audio and video streams to LiveKit
-	publishStreams()
+	if !*noStream {
+		publishStreams()
+	} else {
+		select {}
+	}
 }
