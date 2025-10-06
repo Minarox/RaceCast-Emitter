@@ -7,7 +7,7 @@ updates:
       time: "09:00"
       timezone: "Europe/Paris"
     labels:
-      - "dependencie"
+      - "dependencies"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -16,4 +16,4 @@ updates:
       time: "09:00"
       timezone: "Europe/Paris"
     labels:
-      - "dependencie"
+      - "dependencies"
