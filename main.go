@@ -34,7 +34,7 @@ import (
 var sugar *zap.SugaredLogger
 var temperatureReadings [32]float32
 var oldMetadata any
-var livekitClientVersion = "2.15.2"
+var livekitClientVersion = "2.15.8"
 var debug *bool
 var noMPU *bool
 var noUPS *bool
