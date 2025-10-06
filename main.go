@@ -538,9 +538,40 @@ func publishStreams() {
 	page.
 		MustNavigate("https://" + os.Getenv("LIVEKIT_DOMAIN")).
 		MustEval(`async () => {
-			const url = "wss://" + await window.env('LIVEKIT_DOMAIN');
+			let devicesBuffer = [];
+			const url = "wss://" + await window.env("LIVEKIT_DOMAIN");
 			const token = await window.env("LIVEKIT_CLIENT_TOKEN");
 			const room = new LivekitClient.Room({
+				dynacast: true,
+				audioCaptureDefaults: {
+					autoGainControl: false,
+					echoCancellation: false,
+					noiseSuppression: false,
+					voiceIsolation: false
+				},
+				videoCaptureDefaults: {
+					resolution: {
+						aspectRatio: 16 / 9,
+						width: 1280,
+						height: 720,
+						frameRate: 30
+					}
+				},
+				publishDefaults: {
+					red: false,
+					dtx: true,
+					stopMicTrackOnMute: false,
+					audioPreset: {
+						maxBitrate: 32_000
+					},
+					degradationPreference: "maintain-framerate",
+					videoCodec: "VP8",
+					videoEncoding: {
+						maxBitrate: 600_000,
+						maxFramerate: 30
+					},
+					simulcast: false
+				},
 				reconnectPolicy: {
 					nextRetryDelayInMs: () => {
 						return 1000;
@@ -550,58 +581,51 @@ func publishStreams() {
 
 			room.prepareConnection(url, token);
 
-			const createAudioTrack = async (device) => {
-				await room.localParticipant.publishTrack(
-					await LivekitClient.createLocalAudioTrack({
-						deviceId: device.deviceId,
-						autoGainControl: false,
-						echoCancellation: false,
-						noiseSuppression: false
-					}),
-					{
-						name: device.label,
-						stream: device.groupId,
-						simulcast: false,
-						source: LivekitClient.Track.Source.Microphone,
-						red: false,
-						dtx: true,
-						stopMicTrackOnMute: false,
-						audioPreset: {
-							maxBitrate: 24_000
-						}
-					}
-				);
-			};
+			async function createTrack(device, kind) {
+				let track;
+				const trackOptions = {
+					name: device.label,
+					stream: device.groupId,
+					source: kind
+				};
 
-			const createVideoTrack = async (device) => {
-				await room.localParticipant.publishTrack(
-					await LivekitClient.createLocalVideoTrack({
-						deviceId: device.deviceId
-					}),
-					{
-						name: device.label,
-						stream: device.groupId,
-						simulcast: false,
-						source: LivekitClient.Track.Source.Camera,
-						degradationPreference: "maintain-framerate",
-						videoCodec: "VP8",
-						videoEncoding: {
-							maxFramerate: 30,
-							maxBitrate: 600_000,
-						}
-					}
-				);
-			};
+				if (kind === LivekitClient.Track.Source.Camera) {
+					track = await LivekitClient.createLocalVideoTrack({ deviceId: device.deviceId });
+				} else {
+					track = await LivekitClient.createLocalAudioTrack({ deviceId: device.deviceId });
+				}
+
+				await room.localParticipant.publishTrack(track, trackOptions);
+			}
 
 			// Create audio and video tracks
-			const devices = (await navigator.mediaDevices.enumerateDevices())
-				.filter(device =>['audioinput', 'videoinput'].includes(device.kind) && device.deviceId !== 'default')
-				.sort((a, b) => a.label.localeCompare(b.label));
-			const audioDevices = devices.filter(device => device.kind === 'audioinput');
-			const videoDevices = devices.filter(device => device.kind === 'videoinput');
+			async function manageTracks() {
+				const devices = (await navigator.mediaDevices.enumerateDevices())
+					.filter(device =>["audioinput", "videoinput"].includes(device.kind) && device.deviceId !== "default")
+					.sort((a, b) => a.label.localeCompare(b.label));
 
-			audioDevices.forEach(async (device) => await createAudioTrack(device));
-			videoDevices.forEach(async (device) => await createVideoTrack(device));
+				const removedDevices = devices.filter(device =>
+					devicesBuffer.some(bufDevice => bufDevice.deviceId === device.deviceId && bufDevice.kind === device.kind)
+				);
+
+				// TODO: Unpublish old tracks
+				await window.logDebug(JSON.stringify(removedDevices, null, 2));
+				await window.logDebug(JSON.stringify(room.localParticipant.trackPublications, null, 2));
+
+				// await room.localParticipant.unpublishTrack(track);
+
+				const addedDevices = devices.filter(device =>
+					!devicesBuffer.some(bufDevice => bufDevice.deviceId === device.deviceId && bufDevice.kind === device.kind)
+				);
+
+				const videoDevices = addedDevices.filter(device => device.kind === 'videoinput');
+				videoDevices.forEach(async (device) => await createTrack(device, LivekitClient.Track.Source.Camera));
+
+				const audioDevices = addedDevices.filter(device => device.kind === 'audioinput');
+				audioDevices.forEach(async (device) => await createTrack(device, LivekitClient.Track.Source.Microphone));
+
+				devicesBuffer = devices
+			}
 
 			room
 				.on(LivekitClient.RoomEvent.LocalTrackPublished, async (track) => {
@@ -611,8 +635,13 @@ func publishStreams() {
 				})
 				.on(LivekitClient.RoomEvent.ConnectionStateChanged, async (state) => {
 					await window.logInfo(state);
+				})
+				.on(LivekitClient.RoomEvent.MediaDevicesChanged, async () => {
+					await manageTracks();
 				});
 
+			await manageTracks();
+			await window.logDebug(JSON.stringify(room.localParticipant.trackPublications, null, 2));
 			await room.connect(url, token);
 		}`)
 
