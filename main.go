@@ -34,7 +34,6 @@ import (
 var sugar *zap.SugaredLogger
 var temperatureReadings [32]float32
 var oldMetadata any
-var livekitClientVersion = "2.15.8"
 var debug *bool
 var noMPU *bool
 var noUPS *bool
@@ -445,10 +444,10 @@ func roomMetadataUpdater() {
 
 func downloadLiveKitClient() {
 	// Download the LiveKit client library if not already present
-	if _, err := os.Stat("livekit-client@" + livekitClientVersion + ".umd.min.js"); os.IsNotExist(err) {
-		sugar.Info("Downloading LiveKit client library (" + livekitClientVersion + ")...")
+	if _, err := os.Stat("livekit-client.umd.min.js"); os.IsNotExist(err) {
+		sugar.Info("Downloading LiveKit client library...")
 
-		cmd := exec.Command("curl", "-o", "livekit-client@"+livekitClientVersion+".umd.min.js", "https://cdn.jsdelivr.net/npm/livekit-client@"+livekitClientVersion+"/dist/livekit-client.umd.min.js")
+		cmd := exec.Command("curl", "-o", "livekit-client.umd.min.js", os.Getenv("LIVEKIT_CLIENT_URL"))
 		if err := cmd.Run(); err != nil {
 			sugar.Fatalw("Failed to download LiveKit client library.", "details", err)
 		}
@@ -508,7 +507,7 @@ func publishStreams() {
 	page, _ := browser.Page(proto.TargetCreateTarget{})
 
 	// Inject livekit-client.umd.min.js into the page
-	livekitScriptBytes, err := os.ReadFile("livekit-client@" + livekitClientVersion + ".umd.min.js")
+	livekitScriptBytes, err := os.ReadFile("livekit-client.umd.min.js")
 	if err != nil {
 		sugar.Fatalw("Failed to read LiveKit client library.", "details", err)
 	}
