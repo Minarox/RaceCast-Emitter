@@ -39,6 +39,7 @@ var noMPU *bool
 var noUPS *bool
 var noMetadata *bool
 var noStream *bool
+var noRoomCreation *bool
 
 type Modem struct {
 	Modem struct {
@@ -403,7 +404,7 @@ func updateMetadata(roomClient *lksdk.RoomServiceClient, modemID []byte, ups *i2
 	}
 }
 
-func roomMetadataUpdater() {
+func roomMetadataUpdater(roomClient *lksdk.RoomServiceClient) {
 	logger.ChangePackageLogLevel("i2c", logger.LogLevel(sugar.Level()))
 
 	if !*noMPU {
@@ -429,13 +430,6 @@ func roomMetadataUpdater() {
 		sugar.Errorw("Failed to enable GPS.", "details", err)
 	}
 
-	// Connect to LiveKit server
-	roomClient := lksdk.NewRoomServiceClient(
-		"https://"+os.Getenv("LIVEKIT_DOMAIN"),
-		os.Getenv("LIVEKIT_API_KEY"),
-		os.Getenv("LIVEKIT_API_SECRET"),
-	)
-
 	for {
 		go updateMetadata(roomClient, modemID, ups)
 		time.Sleep(time.Second)
@@ -454,7 +448,43 @@ func downloadLiveKitClient() {
 	}
 }
 
-func setLiveKitClientToken() {
+func createLiveKitRoom(roomClient *lksdk.RoomServiceClient) {
+	var roomCreated bool = false
+	rooms , err := roomClient.ListRooms(
+		context.Background(),
+		&livekit.ListRoomsRequest{},
+	)
+	if err != nil {
+		sugar.Fatalw("Failed to list LiveKit rooms.", "details", err)
+	}
+
+	for _, room := range rooms.Rooms {
+		if room.Name == os.Getenv("LIVEKIT_ROOM") {
+			sugar.Infow("LiveKit room already exists.", "room", os.Getenv("LIVEKIT_ROOM"))
+			roomCreated = true
+			return
+		}
+	}
+
+	if !roomCreated {
+		sugar.Info("Creating LiveKit room...")
+		_, err = roomClient.CreateRoom(
+			context.Background(),
+			&livekit.CreateRoomRequest{
+				Name: os.Getenv("LIVEKIT_ROOM"),
+				DepartureTimeout: 60 * 60 * 24,
+			},
+		)
+		if err != nil {
+			sugar.Fatalw("Failed to create LiveKit room.", "details", err)
+		}
+
+		sugar.Infow("LiveKit room created.", "room", os.Getenv("LIVEKIT_ROOM"))
+		roomCreated = true
+	}
+}
+
+func createLiveKitClientToken() {
 	at := auth.NewAccessToken(os.Getenv("LIVEKIT_API_KEY"), os.Getenv("LIVEKIT_API_SECRET"))
 	grant := &auth.VideoGrant{
 		RoomCreate: true,
@@ -476,7 +506,7 @@ func setLiveKitClientToken() {
 
 func publishStreams() {
 	downloadLiveKitClient()
-	setLiveKitClientToken()
+	createLiveKitClientToken()
 
 	path, exists := launcher.LookPath()
 	if !exists {
@@ -653,6 +683,7 @@ func main() {
 	noUPS = flag.Bool("no-ups", false, "Disable UPS state reader")
 	noMetadata = flag.Bool("no-metadata", false, "Disable room metadata updater")
 	noStream = flag.Bool("no-stream", false, "Disable audio and video stream publishing")
+	noRoomCreation = flag.Bool("no-room-creation", false, "Disable LiveKit room creation")
 	flag.Parse()
 
 	// Loading logger
@@ -681,9 +712,21 @@ func main() {
 		sugar.Fatal(".env file not found.")
 	}
 
+	// Connect to LiveKit server
+	roomClient := lksdk.NewRoomServiceClient(
+		"https://"+os.Getenv("LIVEKIT_DOMAIN"),
+		os.Getenv("LIVEKIT_API_KEY"),
+		os.Getenv("LIVEKIT_API_SECRET"),
+	)
+
+	// Create LiveKit room if it doesn't exist
+	if !*noRoomCreation {
+		createLiveKitRoom(roomClient)
+	}
+
 	// Update room metadata with modem, location, and temperature data
 	if !*noMetadata {
-		go roomMetadataUpdater()
+		go roomMetadataUpdater(roomClient)
 	}
 
 	// Publish audio and video streams to LiveKit
