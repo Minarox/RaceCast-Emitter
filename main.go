@@ -411,15 +411,6 @@ func roomMetadataUpdater(roomClient *lksdk.RoomServiceClient) {
 		go mpuTemperatureUpdater()
 	}
 
-	var ups *i2c.I2C = nil
-	if !*noUPS {
-		ups, err := i2c.NewI2C(0x36, 1)
-		if err != nil {
-			sugar.Fatalw("Failed to create I2C client for UPS.", "details", err)
-		}
-		defer ups.Close()
-	}
-
 	modemID, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
 	if err != nil {
 		sugar.Fatalw("Failed to get modem ID.", "details", err)
@@ -428,6 +419,16 @@ func roomMetadataUpdater(roomClient *lksdk.RoomServiceClient) {
 	_, err = exec.Command("sh", "-c", `mmcli -m `+string(modemID)+` --location-enable-gps-raw --location-enable-gps-nmea`).Output()
 	if err != nil {
 		sugar.Errorw("Failed to enable GPS.", "details", err)
+	}
+
+	var ups *i2c.I2C = nil
+	if !*noUPS {
+		i2c, err := i2c.NewI2C(0x36, 1)
+		if err != nil {
+			sugar.Fatalw("Failed to create I2C client for UPS.", "details", err)
+		}
+		ups = i2c
+		defer ups.Close()
 	}
 
 	for {
