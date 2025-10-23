@@ -12,3 +12,6 @@ livekit*.**.js
 
 # Logs
 *.log
+
+# Build
+RaceCast-Emitter
