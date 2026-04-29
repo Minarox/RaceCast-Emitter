@@ -8,17 +8,17 @@ import (
 	"os"
 	"time"
 
-	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 )
 
 var (
-	roomClient *lksdk.RoomServiceClient
+	roomService *lksdk.RoomServiceClient
+	roomCreated bool
 	oldMetadata map[string]any
 )
 
-func getUrl(protocol string) string {
+func getUrl() string {
 	domain := os.Getenv("LIVEKIT_DOMAIN")
 	tls := os.Getenv("LIVEKIT_TLS") == "true"
 
@@ -27,55 +27,34 @@ func getUrl(protocol string) string {
 	}
 
 	if !tls {
-		return protocol + "://" + domain
+		return "http://" + domain
 	}
-	return protocol + "s://" + domain
+	return "https://" + domain
 }
 
-func createRoomClient() *lksdk.RoomServiceClient {
-	if roomClient == nil {
-		roomClient = lksdk.NewRoomServiceClient(
-			getUrl("http"),
+func createRoomService() *lksdk.RoomServiceClient {
+	if roomService == nil {
+		roomService = lksdk.NewRoomServiceClient(
+			getUrl(),
 			os.Getenv("LIVEKIT_API_KEY"),
 			os.Getenv("LIVEKIT_API_SECRET"),
 		)
 	}
-	return roomClient
-}
-
-func CreateLiveKitClientToken() string {
-	if os.Getenv("LIVEKIT_API_KEY") == "" || os.Getenv("LIVEKIT_API_SECRET") == "" || os.Getenv("LIVEKIT_ROOM") == "" || os.Getenv("LIVEKIT_IDENTITY") == "" {
-		Log.Fatalw("LiveKit environment variables are not set. Please check your .env file.")
-	}
-
-	at := auth.NewAccessToken(os.Getenv("LIVEKIT_API_KEY"), os.Getenv("LIVEKIT_API_SECRET"))
-	grant := &auth.VideoGrant{
-		RoomCreate: true,
-		RoomJoin:   true,
-		Room:       os.Getenv("LIVEKIT_ROOM"),
-	}
-
-	at.SetVideoGrant(grant).
-		SetIdentity(os.Getenv("LIVEKIT_IDENTITY")).
-		SetValidFor(time.Hour * 24)
-
-	token, err := at.ToJWT()
-	if err != nil {
-		Log.Fatalw("Failed to generate LiveKit token.", "details", err)
-	}
-
-	return token
+	return roomService
 }
 
 func SetupLiveKitRoom() {
+	if (roomCreated) {
+		return
+	}
+
 	if os.Getenv("LIVEKIT_ROOM") == "" {
 		Log.Fatalw("LIVEKIT_ROOM environment variable is not set. Please check your .env file.")
 	}
 
-	createRoomClient()
+	createRoomService()
 
-	var roomCreated bool = false
-	rooms , err := roomClient.ListRooms(
+	rooms , err := roomService.ListRooms(
 		context.Background(),
 		&livekit.ListRoomsRequest{},
 	)
@@ -93,7 +72,7 @@ func SetupLiveKitRoom() {
 
 	if !roomCreated {
 		Log.Info("Creating LiveKit room...")
-		_, err = roomClient.CreateRoom(
+		_, err = roomService.CreateRoom(
 			context.Background(),
 			&livekit.CreateRoomRequest{
 				Name: os.Getenv("LIVEKIT_ROOM"),
@@ -124,7 +103,7 @@ func UpdateLiveKitRoomMetadata(metadata map[string]any) {
 		Log.Debugw("Updating room metadata.", "payload", string(payloadJSON))
 
 		// Update room metadata
-		roomClient.UpdateRoomMetadata(
+		roomService.UpdateRoomMetadata(
 			context.Background(),
 			&livekit.UpdateRoomMetadataRequest{
 				Room:     os.Getenv("LIVEKIT_ROOM"),
@@ -132,4 +111,23 @@ func UpdateLiveKitRoomMetadata(metadata map[string]any) {
 			},
 		)
 	}
+}
+
+func ConnectToLiveKitRoom() *lksdk.Room {
+	SetupLiveKitRoom()
+
+	room, err := lksdk.ConnectToRoom(getUrl(), lksdk.ConnectInfo{
+		APIKey:              os.Getenv("LIVEKIT_API_KEY"),
+		APISecret:           os.Getenv("LIVEKIT_API_SECRET"),
+		RoomName:            os.Getenv("LIVEKIT_ROOM"),
+		ParticipantIdentity: os.Getenv("LIVEKIT_IDENTITY"),
+		ParticipantName:     os.Getenv("LIVEKIT_IDENTITY"),
+	}, &lksdk.RoomCallback{})
+
+	if err != nil {
+		Log.Errorf("Failed to connect to LiveKit room: %v", err)
+	}
+
+	Log.Infow("Connected to LiveKit room.", "room", os.Getenv("LIVEKIT_ROOM"))
+	return room
 }

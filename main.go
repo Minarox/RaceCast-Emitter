@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	debug *bool
-	noUPS *bool
-	noGPS *bool
+	debug      *bool
+	noUPS      *bool
+	noGPS      *bool
 	noMetadata *bool
+	noStream   *bool
 )
 
 func updateMetadata() {
@@ -55,8 +56,6 @@ func roomMetadataUpdater() {
 		scripts.SetupGPS()
 	}
 
-	utils.SetupLiveKitRoom()
-
 	for {
 		go updateMetadata()
 		time.Sleep(time.Second)
@@ -69,6 +68,7 @@ func main() {
 	noUPS = flag.Bool("no-ups", false, "Disable UPS state reader")
 	noGPS = flag.Bool("no-gps", false, "Disable GPS state reader")
 	noMetadata = flag.Bool("no-metadata", false, "Disable metadata updates")
+	noStream = flag.Bool("no-stream", false, "Disable video/audio streaming")
 	flag.Parse()
 
 	utils.CreateLogger(debug)
@@ -82,8 +82,19 @@ func main() {
 	utils.SetLevelFromEnv(os.Getenv("LOG_LEVEL"))
 	utils.Log.Infow("Launching program.", "process_id", os.Getpid())
 
+	if (!*noStream || (!*noMetadata && (!*noUPS || !*noGPS))) {
+		utils.SetupLiveKitRoom()
+	}
+
 	if !*noMetadata && (!*noUPS || !*noGPS) {
 		go roomMetadataUpdater()
+	}
+
+	if !*noStream {
+		room := utils.ConnectToLiveKitRoom()
+		defer room.Disconnect()
+
+		// TODO: Create stream publisher and start streaming video/audio tracks to LiveKit room.
 	}
 
 	select {}
