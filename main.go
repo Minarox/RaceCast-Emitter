@@ -16,8 +16,25 @@ var (
 	noUPS      *bool
 	noGPS      *bool
 	noMetadata *bool
-	noStream   *bool
 )
+
+var RoadCam = utils.PipelineConfig{
+	Name:        "Route",
+	Device:      "/dev/video0",
+	Width:       1280,
+	Height:      720,
+	Framerate:   30,
+	Bitrate:     1_000_000,
+}
+
+var InteriorCam = utils.PipelineConfig{
+	Name:        "Habitacle",
+	Device:      "/dev/video1",
+	Width:       1280,
+	Height:      720,
+	Framerate:   30,
+	Bitrate:     1_000_000,
+}
 
 func updateMetadata() {
 	var (
@@ -68,7 +85,8 @@ func main() {
 	noUPS = flag.Bool("no-ups", false, "Disable UPS state reader")
 	noGPS = flag.Bool("no-gps", false, "Disable GPS state reader")
 	noMetadata = flag.Bool("no-metadata", false, "Disable metadata updates")
-	noStream = flag.Bool("no-stream", false, "Disable video/audio streaming")
+	noStream := flag.Bool("no-stream", false, "Disable video/audio streaming")
+	fakeStream := flag.Bool("fake-stream", false, "Use fake video/audio stream")
 	flag.Parse()
 
 	utils.CreateLogger(debug)
@@ -91,10 +109,18 @@ func main() {
 	}
 
 	if !*noStream {
+		utils.InitGStreamer()
+
 		room := utils.ConnectToLiveKitRoom()
 		defer room.Disconnect()
 
-		// TODO: Create stream publisher and start streaming video/audio tracks to LiveKit room.
+		RoadPipeline := scripts.AddVideoStream(room, RoadCam, *fakeStream)
+		defer RoadPipeline.Stop()
+		defer RoadPipeline.Free()
+
+		InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fakeStream)
+		defer InteriorPipeline.Stop()
+		defer InteriorPipeline.Free()
 	}
 
 	select {}
