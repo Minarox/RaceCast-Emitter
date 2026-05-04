@@ -2,6 +2,8 @@ package scripts
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"os/exec"
 	"racecast-emitter/utils"
 	"strings"
@@ -109,4 +111,33 @@ func GetGPSData() map[string]any {
 
 	utils.Log.Infow("GPS Data", "payload", data)
 	return data
+}
+
+func GetFakeGPSData() map[string]any {
+	// randomize around San Francisco by default
+	baseLon := -122.4194
+	baseLat := 37.7749
+
+	// tech selection
+	techs := []string{"LTE", "5G", "3G"}
+	tech := techs[rand.Intn(len(techs))]
+
+	signal := 30 + rand.Intn(71) // 30-100
+	lon := baseLon + (rand.Float64()-0.5)/100.0 // small jitter
+	lat := baseLat + (rand.Float64()-0.5)/100.0
+	alt := 5.0 + rand.Float64()*50.0
+	spd := rand.Float64() * 30.0
+	sat := 4 + rand.Intn(9) // 4-12
+	hdop := 0.5 + rand.Float64()*2.5
+
+	return map[string]any{
+		"tech":   tech,
+		"signal": signal,
+		"lon":    utils.ParseFloat32(fmt.Sprintf("%f", lon)),
+		"lat":    utils.ParseFloat32(fmt.Sprintf("%f", lat)),
+		"alt":    utils.ParseFloat32(fmt.Sprintf("%f", alt)),
+		"spd":    utils.ParseFloat32(fmt.Sprintf("%f", spd)),
+		"sat":    utils.ParseInt(fmt.Sprintf("%d", sat)),
+		"hdop":   utils.ParseFloat32(fmt.Sprintf("%.2f", hdop)),
+	}
 }

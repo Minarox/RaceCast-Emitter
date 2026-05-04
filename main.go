@@ -13,6 +13,7 @@ import (
 
 var (
 	debug      *bool
+	fake 	   *bool
 	noUPS      *bool
 	noGPS      *bool
 	noMetadata *bool
@@ -43,11 +44,19 @@ func updateMetadata() {
 	)
 
 	if !*noUPS {
-		upsData = scripts.GetUPSData()
+		if !*fake {
+			upsData = scripts.GetUPSData()
+		} else {
+			upsData = scripts.GetFakeUPSData()
+		}
 	}
 
 	if !*noGPS {
-		gpsData = scripts.GetGPSData()
+		if !*fake {
+			gpsData = scripts.GetGPSData()
+		} else {
+			gpsData = scripts.GetFakeGPSData()
+		}
 	}
 
 	metadata := make(map[string]any)
@@ -64,12 +73,12 @@ func updateMetadata() {
 }
 
 func roomMetadataUpdater() {
-	if !*noUPS {
+	if !*noUPS && !*fake {
 		scripts.CreateUPSReader(0x41, 1)
 		defer scripts.CloseUPSReader()
 	}
 
-	if !*noGPS {
+	if !*noGPS && !*fake {
 		scripts.SetupGPS()
 	}
 
@@ -82,6 +91,7 @@ func roomMetadataUpdater() {
 func main() {
 	// Read command line flags
 	debug = flag.Bool("debug", false, "Enable debug mode")
+	fake = flag.Bool("fake", false, "Enable fake mode")
 	noUPS = flag.Bool("no-ups", false, "Disable UPS state reader")
 	noGPS = flag.Bool("no-gps", false, "Disable GPS state reader")
 	noMetadata = flag.Bool("no-metadata", false, "Disable metadata updates")
@@ -114,11 +124,11 @@ func main() {
 		room := utils.ConnectToLiveKitRoom()
 		defer room.Disconnect()
 
-		RoadPipeline := scripts.AddVideoStream(room, RoadCam, *fakeStream)
+		RoadPipeline := scripts.AddVideoStream(room, RoadCam, *fake || *fakeStream)
 		defer RoadPipeline.Stop()
 		defer RoadPipeline.Free()
 
-		InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fakeStream)
+		InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
 		defer InteriorPipeline.Stop()
 		defer InteriorPipeline.Free()
 	}

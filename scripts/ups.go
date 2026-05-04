@@ -4,6 +4,7 @@ import (
 	"math"
 	"racecast-emitter/utils"
 	"sync"
+	"time"
 
 	i2c "github.com/d2r2/go-i2c"
 	"github.com/d2r2/go-logger"
@@ -121,6 +122,15 @@ func GetUPSData() map[string]any {
 
 	utils.Log.Infow("UPS Data", "payload", data)
 	return data
+}
+
+func GetFakeUPSData() map[string]any {
+	return map[string]any{
+		"v": utils.RoundToThreeDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10)),
+		"a": utils.RoundToThreeDecimals(1 + math.Sin(float64(time.Now().Unix())/5)),
+		"w": utils.RoundToThreeDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10) * (1 + math.Sin(float64(time.Now().Unix())/5))),
+		"p": utils.RoundToThreeDecimals(50 + 50*math.Sin(float64(time.Now().Unix())/10)),
+	}
 }
 
 func CloseUPSReader() {
