@@ -52,6 +52,20 @@ package utils
 //     gst_message_unref(m);
 //     return ret;
 // }
+//
+// // Send an upstream GstForceKeyUnit event to request an IDR frame from the encoder.
+// static void gst_force_key_unit_go(GstElement *sink) {
+//     GstEvent *ev = gst_event_new_custom(
+//         GST_EVENT_CUSTOM_UPSTREAM,
+//         gst_structure_new("GstForceKeyUnit",
+//             "timestamp",    G_TYPE_UINT64,   (guint64)(GST_CLOCK_TIME_NONE),
+//             "stream-time",  G_TYPE_UINT64,   (guint64)(GST_CLOCK_TIME_NONE),
+//             "running-time", G_TYPE_UINT64,   (guint64)(GST_CLOCK_TIME_NONE),
+//             "all-headers",  G_TYPE_BOOLEAN,  TRUE,
+//             "count",        G_TYPE_UINT,     (guint)0,
+//             NULL));
+//     gst_element_send_event(sink, ev);
+// }
 import "C"
 
 import (
@@ -110,8 +124,8 @@ func NewVideoPipeline(cfg PipelineConfig, fakeStream bool) (*GStreamerPipeline, 
 				"video/x-raw,format=I420,width=%d,height=%d,framerate=%d/1 ! "+
 				"nvvidconv ! "+
 				"video/x-raw(memory:NVMM),format=NV12 ! "+
-				"nvv4l2vp9enc bitrate=%d ! "+
-				"appsink name=sink max-buffers=2 drop=true sync=false",
+			"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
+			"appsink name=sink max-buffers=2 drop=true sync=false",
 			cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 		)
 	} else {
@@ -124,7 +138,7 @@ func NewVideoPipeline(cfg PipelineConfig, fakeStream bool) (*GStreamerPipeline, 
 				"nvv4l2decoder mjpeg=1 ! "+
 				"nvvidconv ! "+
 				"video/x-raw(memory:NVMM),format=NV12 ! "+
-				"nvv4l2vp9enc bitrate=%d ! "+
+				"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
 				"appsink name=sink max-buffers=2 drop=true sync=false",
 			cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 		)
@@ -224,6 +238,21 @@ func newPipeline(pipelineStr string) (*GStreamerPipeline, error) {
 		ctx:         ctx,
 		cancel:      cancel,
 	}, nil
+}
+
+// ForceKeyframe sends an upstream GstForceKeyUnit event to the encoder,
+// requesting an IDR frame on the next encoded buffer.
+// Call this whenever a new subscriber connects to minimise time-to-first-frame.
+func (p *GStreamerPipeline) ForceKeyframe() {
+	p.mu.Lock()
+	appsink := p.appsink
+	running := p.running
+	p.mu.Unlock()
+
+	if !running || appsink == nil {
+		return
+	}
+	C.gst_force_key_unit_go(appsink)
 }
 
 // AttachTrack associates a LiveKit LocalSampleTrack with the pipeline.

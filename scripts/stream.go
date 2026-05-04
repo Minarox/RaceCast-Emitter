@@ -30,6 +30,12 @@ func AddVideoStream(room *lksdk.Room, cfg utils.PipelineConfig, fakeStream bool)
 
 	pipeline.AttachTrack(track)
 
+	// Force an IDR frame as soon as each new subscriber binds to the track,
+	// so viewers never wait more than one keyframe interval for the first image.
+	track.OnBind(func() {
+		pipeline.ForceKeyframe()
+	})
+
 	if err := pipeline.Start(); err != nil {
 		pipeline.Free()
 		utils.Log.Fatalw("Failed to start video pipeline.", "error", err)

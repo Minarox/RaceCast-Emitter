@@ -37,6 +37,15 @@ var InteriorCam = utils.PipelineConfig{
 	Bitrate:     1_000_000,
 }
 
+// var PedalsCam = utils.PipelineConfig{
+// 	Name:        "Pedals",
+// 	Device:      "/dev/video2",
+// 	Width:       1280,
+// 	Height:      720,
+// 	Framerate:   30,
+// 	Bitrate:     1_000_000,
+// }
+
 func updateMetadata() {
 	var (
 		upsData map[string]any
@@ -131,6 +140,10 @@ func main() {
 		InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
 		defer InteriorPipeline.Stop()
 		defer InteriorPipeline.Free()
+
+		// PedalsPipeline := scripts.AddVideoStream(room, PedalsCam, true)
+		// defer PedalsPipeline.Stop()
+		// defer PedalsPipeline.Free()
 	}
 
 	select {}
