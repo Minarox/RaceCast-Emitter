@@ -12,11 +12,12 @@ import (
 )
 
 var (
-	debug      *bool
-	fake 	   *bool
-	noUPS      *bool
-	noGPS      *bool
-	noMetadata *bool
+	debug        *bool
+	fake 	     *bool
+	noUPS        *bool
+	noGPS        *bool
+	noMetadata   *bool
+	fakeMetadata *bool
 )
 
 var RoadCam = utils.PipelineConfig{
@@ -37,14 +38,14 @@ var InteriorCam = utils.PipelineConfig{
 	Bitrate:     1_000_000,
 }
 
-// var PedalsCam = utils.PipelineConfig{
-// 	Name:        "Pedals",
-// 	Device:      "/dev/video2",
-// 	Width:       1280,
-// 	Height:      720,
-// 	Framerate:   30,
-// 	Bitrate:     1_000_000,
-// }
+var PedalsCam = utils.PipelineConfig{
+	Name:        "Pedals",
+	Device:      "/dev/video2",
+	Width:       1280,
+	Height:      720,
+	Framerate:   30,
+	Bitrate:     1_000_000,
+}
 
 func updateMetadata() {
 	var (
@@ -53,18 +54,18 @@ func updateMetadata() {
 	)
 
 	if !*noUPS {
-		if !*fake {
-			upsData = scripts.GetUPSData()
-		} else {
+		if *fake || *fakeMetadata {
 			upsData = scripts.GetFakeUPSData()
+		} else {
+			upsData = scripts.GetUPSData()
 		}
 	}
 
 	if !*noGPS {
-		if !*fake {
-			gpsData = scripts.GetGPSData()
-		} else {
+		if *fake || *fakeMetadata {
 			gpsData = scripts.GetFakeGPSData()
+		} else {
+			gpsData = scripts.GetGPSData()
 		}
 	}
 
@@ -104,6 +105,7 @@ func main() {
 	noUPS = flag.Bool("no-ups", false, "Disable UPS state reader")
 	noGPS = flag.Bool("no-gps", false, "Disable GPS state reader")
 	noMetadata = flag.Bool("no-metadata", false, "Disable metadata updates")
+	fakeMetadata = flag.Bool("fake-metadata", false, "Use fake metadata")
 	noStream := flag.Bool("no-stream", false, "Disable video/audio streaming")
 	fakeStream := flag.Bool("fake-stream", false, "Use fake video/audio stream")
 	flag.Parse()
@@ -137,9 +139,9 @@ func main() {
 		defer RoadPipeline.Stop()
 		defer RoadPipeline.Free()
 
-		InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
-		defer InteriorPipeline.Stop()
-		defer InteriorPipeline.Free()
+		// InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
+		// defer InteriorPipeline.Stop()
+		// defer InteriorPipeline.Free()
 
 		// PedalsPipeline := scripts.AddVideoStream(room, PedalsCam, true)
 		// defer PedalsPipeline.Stop()
