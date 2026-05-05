@@ -15,7 +15,7 @@ var (
 	debug        *bool
 	fake 	     *bool
 	noUPS        *bool
-	noGPS        *bool
+	noModem      *bool
 	noMetadata   *bool
 	fakeMetadata *bool
 )
@@ -50,7 +50,7 @@ var PedalsCam = utils.PipelineConfig{
 func updateMetadata() {
 	var (
 		upsData map[string]any
-		gpsData map[string]any
+		modemData map[string]any
 	)
 
 	if !*noUPS {
@@ -61,11 +61,11 @@ func updateMetadata() {
 		}
 	}
 
-	if !*noGPS {
+	if !*noModem {
 		if *fake || *fakeMetadata {
-			gpsData = scripts.GetFakeGPSData()
+			modemData = scripts.GetFakeModemData()
 		} else {
-			gpsData = scripts.GetGPSData()
+			modemData = scripts.GetModemData()
 		}
 	}
 
@@ -73,8 +73,8 @@ func updateMetadata() {
 	if upsData != nil {
 		metadata["ups"] = upsData
 	}
-	if gpsData != nil {
-		metadata["gps"] = gpsData
+	if modemData != nil {
+		metadata["modem"] = modemData
 	}
 
 	if len(metadata) > 0 {
@@ -88,8 +88,8 @@ func roomMetadataUpdater() {
 		defer scripts.CloseUPSReader()
 	}
 
-	if !*noGPS && !*fake {
-		scripts.SetupGPS()
+	if !*noModem && !*fake {
+		scripts.SetupModem()
 	}
 
 	for {
@@ -103,7 +103,7 @@ func main() {
 	debug = flag.Bool("debug", false, "Enable debug mode")
 	fake = flag.Bool("fake", false, "Enable fake mode")
 	noUPS = flag.Bool("no-ups", false, "Disable UPS state reader")
-	noGPS = flag.Bool("no-gps", false, "Disable GPS state reader")
+	noModem = flag.Bool("no-modem", false, "Disable Modem state reader")
 	noMetadata = flag.Bool("no-metadata", false, "Disable metadata updates")
 	fakeMetadata = flag.Bool("fake-metadata", false, "Use fake metadata")
 	noStream := flag.Bool("no-stream", false, "Disable video/audio streaming")
@@ -121,11 +121,11 @@ func main() {
 	utils.SetLevelFromEnv(os.Getenv("LOG_LEVEL"))
 	utils.Log.Infow("Launching program.", "process_id", os.Getpid())
 
-	if (!*noStream || (!*noMetadata && (!*noUPS || !*noGPS))) {
+	if (!*noStream || (!*noMetadata && (!*noUPS || !*noModem))) {
 		utils.SetupLiveKitRoom()
 	}
 
-	if !*noMetadata && (!*noUPS || !*noGPS) {
+	if !*noMetadata && (!*noUPS || !*noModem) {
 		go roomMetadataUpdater()
 	}
 

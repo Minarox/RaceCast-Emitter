@@ -114,10 +114,10 @@ func GetUPSData() map[string]any {
 	p = math.Max(0, math.Min(p, 100))
 
 	var data = map[string]any{
-		"v": utils.RoundToThreeDecimals(v),
-		"a": utils.RoundToThreeDecimals(a),
-		"w": utils.RoundToThreeDecimals(w),
-		"p": utils.RoundToThreeDecimals(p),
+		"v": utils.RoundToTwoDecimals(v),
+		"a": utils.RoundToTwoDecimals(a),
+		"w": utils.RoundToTwoDecimals(w),
+		"p": utils.RoundToTwoDecimals(p),
 	}
 
 	utils.Log.Infow("UPS Data", "payload", data)
@@ -126,10 +126,10 @@ func GetUPSData() map[string]any {
 
 func GetFakeUPSData() map[string]any {
 	return map[string]any{
-		"v": utils.RoundToThreeDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10)),
-		"a": utils.RoundToThreeDecimals(1 + math.Sin(float64(time.Now().Unix())/5)),
-		"w": utils.RoundToThreeDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10) * (1 + math.Sin(float64(time.Now().Unix())/5))),
-		"p": utils.RoundToThreeDecimals(50 + 50*math.Sin(float64(time.Now().Unix())/10)),
+		"v": utils.RoundToTwoDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10)),
+		"a": utils.RoundToTwoDecimals(1 + math.Sin(float64(time.Now().Unix())/5)),
+		"w": utils.RoundToTwoDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10) * (1 + math.Sin(float64(time.Now().Unix())/5))),
+		"p": utils.RoundToTwoDecimals(50 + 50*math.Sin(float64(time.Now().Unix())/10)),
 	}
 }
 

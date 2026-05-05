@@ -56,7 +56,7 @@ func parsePrecision(nmea []string) (*int, *float32) {
 	return nil, nil
 }
 
-func SetupGPS() {
+func SetupModem() {
 	modem, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
 	if err != nil {
 		utils.Log.Fatalw("Failed to get modem ID.", "details", err)
@@ -69,7 +69,7 @@ func SetupGPS() {
 	}
 }
 
-func GetGPSData() map[string]any {
+func GetModemData() map[string]any {
 	// Parse modem data
 	modemOutput, _ := exec.Command("sh", "-c", `mmcli -m `+modemID+` -J`).Output()
 
@@ -109,14 +109,14 @@ func GetGPSData() map[string]any {
 		"hdop":   hdop,
 	}
 
-	utils.Log.Infow("GPS Data", "payload", data)
+	utils.Log.Infow("Modem Data", "payload", data)
 	return data
 }
 
-func GetFakeGPSData() map[string]any {
-	// randomize around San Francisco by default
-	baseLon := -122.4194
-	baseLat := 37.7749
+func GetFakeModemData() map[string]any {
+	// randomize around Paris by default
+	baseLon := 2.349014
+	baseLat := 48.864716
 
 	// tech selection
 	techs := []string{"LTE", "5G", "3G"}
@@ -135,8 +135,8 @@ func GetFakeGPSData() map[string]any {
 		"signal": signal,
 		"lon":    utils.ParseFloat32(fmt.Sprintf("%f", lon)),
 		"lat":    utils.ParseFloat32(fmt.Sprintf("%f", lat)),
-		"alt":    utils.ParseFloat32(fmt.Sprintf("%f", alt)),
-		"spd":    utils.ParseFloat32(fmt.Sprintf("%f", spd)),
+		"alt":    utils.ParseFloat32(fmt.Sprintf("%.0f", alt)),
+		"spd":    utils.ParseFloat32(fmt.Sprintf("%.0f", spd)),
 		"sat":    utils.ParseInt(fmt.Sprintf("%d", sat)),
 		"hdop":   utils.ParseFloat32(fmt.Sprintf("%.2f", hdop)),
 	}

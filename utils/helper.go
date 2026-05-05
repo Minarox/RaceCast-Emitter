@@ -5,8 +5,8 @@ import (
 	"strconv"
 )
 
-func RoundToThreeDecimals(n float64) float64 {
-    return math.Round(n*1000) / 1000
+func RoundToTwoDecimals(n float64) float64 {
+    return math.Round(n*100) / 100
 }
 
 func ParseFloat32(s string) *float32 {
