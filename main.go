@@ -23,8 +23,8 @@ var (
 var RoadCam = utils.PipelineConfig{
 	Name:        "Route",
 	Device:      "/dev/video0",
-	Width:       1280,
-	Height:      720,
+	Width:       640,
+	Height:      480,
 	Framerate:   30,
 	Bitrate:     1_000_000,
 }
@@ -139,9 +139,9 @@ func main() {
 		defer RoadPipeline.Stop()
 		defer RoadPipeline.Free()
 
-		// InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
-		// defer InteriorPipeline.Stop()
-		// defer InteriorPipeline.Free()
+		InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
+		defer InteriorPipeline.Stop()
+		defer InteriorPipeline.Free()
 
 		// PedalsPipeline := scripts.AddVideoStream(room, PedalsCam, true)
 		// defer PedalsPipeline.Stop()

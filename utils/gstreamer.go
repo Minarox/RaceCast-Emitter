@@ -72,6 +72,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -97,6 +99,31 @@ type GStreamerPipeline struct {
 // InitGStreamer must be called once before any pipeline is created.
 func InitGStreamer() {
 	C.gst_init(nil, nil)
+}
+
+// CameraFormat represents a V4L2 pixel format exposed by a camera.
+type CameraFormat string
+
+const (
+	FormatMJPEG CameraFormat = "MJPG"
+	FormatYUYV  CameraFormat = "YUYV"
+)
+
+// DetectCameraFormat queries the V4L2 device with v4l2-ctl and returns the
+// best supported format. MJPEG is preferred over YUYV when both are available.
+func DetectCameraFormat(device string) (CameraFormat, error) {
+	out, err := exec.Command("v4l2-ctl", "--device="+device, "--list-formats").Output()
+	if err != nil {
+		return FormatMJPEG, fmt.Errorf("v4l2-ctl --list-formats failed for %s: %w", device, err)
+	}
+	s := string(out)
+	if strings.Contains(s, string(FormatMJPEG)) {
+		return FormatMJPEG, nil
+	}
+	if strings.Contains(s, string(FormatYUYV)) {
+		return FormatYUYV, nil
+	}
+	return "", fmt.Errorf("no supported format (MJPG/YUYV) found for device %s; v4l2-ctl output: %s", device, s)
 }
 
 // PipelineConfig holds the configuration for a video capture pipeline.
@@ -132,16 +159,19 @@ func NewVideoPipeline(cfg PipelineConfig, fakeStream bool) (*GStreamerPipeline, 
 		if err := checkVideoDevice(cfg.Device); err != nil {
 			return nil, err
 		}
-		pipelineStr = fmt.Sprintf(
-			"v4l2src device=%s ! "+
-				"image/jpeg,width=%d,height=%d,framerate=%d/1 ! "+
-				"nvv4l2decoder mjpeg=1 ! "+
-				"nvvidconv ! "+
-				"video/x-raw(memory:NVMM),format=NV12 ! "+
-				"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
-				"appsink name=sink max-buffers=2 drop=true sync=false",
-			cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
-		)
+		camFmt, err := DetectCameraFormat(cfg.Device)
+		if err != nil {
+			return nil, err
+		}
+		Log.Infow("Camera format detected.", "device", cfg.Device, "format", camFmt)
+		switch camFmt {
+		case FormatMJPEG:
+			pipelineStr = buildMJPEGPipeline(cfg)
+		case FormatYUYV:
+			pipelineStr = buildYUYVPipeline(cfg)
+		default:
+			return nil, fmt.Errorf("unsupported camera format: %s", camFmt)
+		}
 	}
 
 	Log.Debugw("GStreamer video pipeline created.", "pipeline", pipelineStr)
@@ -178,6 +208,36 @@ func NewAudioPipeline(alsaDevice string, fakeStream bool) (*GStreamerPipeline, e
 
 	Log.Debugw("GStreamer audio pipeline created.", "pipeline", pipelineStr)
 	return newPipeline(pipelineStr)
+}
+
+// buildMJPEGPipeline returns a GStreamer pipeline string for MJPEG cameras.
+func buildMJPEGPipeline(cfg PipelineConfig) string {
+	return fmt.Sprintf(
+		"v4l2src device=%s ! "+
+			"image/jpeg,width=%d,height=%d,framerate=%d/1 ! "+
+			"nvv4l2decoder mjpeg=1 ! "+
+			"nvvidconv ! "+
+			"video/x-raw(memory:NVMM),format=NV12 ! "+
+			"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
+			"appsink name=sink max-buffers=2 drop=true sync=false",
+		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
+	)
+}
+
+// buildYUYVPipeline returns a GStreamer pipeline string for YUYV cameras.
+// YUYV (YUY2) is converted to I420 via videoconvert before the NVMM encoder.
+func buildYUYVPipeline(cfg PipelineConfig) string {
+	return fmt.Sprintf(
+		"v4l2src device=%s ! "+
+			"video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1 ! "+
+			"videoconvert ! "+
+			"video/x-raw,format=I420 ! "+
+			"nvvidconv ! "+
+			"video/x-raw(memory:NVMM),format=NV12 ! "+
+			"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
+			"appsink name=sink max-buffers=2 drop=true sync=false",
+		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
+	)
 }
 
 // checkVideoDevice verifies that the V4L2 device node exists and is readable.
