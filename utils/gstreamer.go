@@ -126,8 +126,8 @@ func DetectCameraFormat(device string) (CameraFormat, error) {
 	return "", fmt.Errorf("no supported format (MJPG/YUYV) found for device %s; v4l2-ctl output: %s", device, s)
 }
 
-// PipelineConfig holds the configuration for a video capture pipeline.
-type PipelineConfig struct {
+// VideoPipelineConfig holds the configuration for a video capture pipeline.
+type VideoPipelineConfig struct {
 	Name      string
 	Device    string
 	Width     int
@@ -148,7 +148,7 @@ type AudioPipelineConfig struct {
 // NewVideoPipeline builds a GStreamer VP9 pipeline from a V4L2 MJPEG camera or
 // a SMPTE test pattern, depending on fakeStream.
 // LiveKit/pion handles RTP packetisation via WriteSample.
-func NewVideoPipeline(cfg PipelineConfig, fakeStream bool) (*GStreamerPipeline, error) {
+func NewVideoPipeline(cfg VideoPipelineConfig, fakeStream bool) (*GStreamerPipeline, error) {
 	if cfg.Bitrate <= 0 {
 		cfg.Bitrate = 2_000_000
 	}
@@ -229,7 +229,7 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 }
 
 // buildMJPEGPipeline returns a GStreamer pipeline string for MJPEG cameras.
-func buildMJPEGPipeline(cfg PipelineConfig) string {
+func buildMJPEGPipeline(cfg VideoPipelineConfig) string {
 	return fmt.Sprintf(
 		"v4l2src device=%s ! "+
 			"image/jpeg,width=%d,height=%d,framerate=%d/1 ! "+
@@ -244,7 +244,7 @@ func buildMJPEGPipeline(cfg PipelineConfig) string {
 
 // buildYUYVPipeline returns a GStreamer pipeline string for YUYV cameras.
 // YUYV (YUY2) is converted to I420 via videoconvert before the NVMM encoder.
-func buildYUYVPipeline(cfg PipelineConfig) string {
+func buildYUYVPipeline(cfg VideoPipelineConfig) string {
 	return fmt.Sprintf(
 		"v4l2src device=%s ! "+
 			"video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1 ! "+

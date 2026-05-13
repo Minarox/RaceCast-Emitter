@@ -20,7 +20,7 @@ var (
 	fakeMetadata *bool
 )
 
-var RoadCam = utils.PipelineConfig{
+var RoadCam = utils.VideoPipelineConfig{
 	Name:        "Route",
 	Device:      "/dev/video0",
 	Width:       1280,
@@ -29,7 +29,7 @@ var RoadCam = utils.PipelineConfig{
 	Bitrate:     600_000,
 }
 
-var InteriorCam = utils.PipelineConfig{
+var InteriorCam = utils.VideoPipelineConfig{
 	Name:        "Habitacle",
 	Device:      "/dev/video1",
 	Width:       1280,
@@ -38,7 +38,7 @@ var InteriorCam = utils.PipelineConfig{
 	Bitrate:     600_000,
 }
 
-var PedalsCam = utils.PipelineConfig{
+var PedalsCam = utils.VideoPipelineConfig{
 	Name:        "Pedals",
 	Device:      "/dev/video2",
 	Width:       1280,

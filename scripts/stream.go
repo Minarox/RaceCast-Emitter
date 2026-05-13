@@ -10,7 +10,7 @@ import (
 // given LiveKit room.
 //
 // The returned pipeline must be stopped and freed by the caller on shutdown.
-func AddVideoStream(room *lksdk.Room, cfg utils.PipelineConfig, fakeStream bool) *utils.GStreamerPipeline {
+func AddVideoStream(room *lksdk.Room, cfg utils.VideoPipelineConfig, fakeStream bool) *utils.GStreamerPipeline {
 	if fakeStream {
 		utils.Log.Infow("Using SMPTE test pattern.")
 	} else {
