@@ -23,10 +23,10 @@ var (
 var RoadCam = utils.PipelineConfig{
 	Name:        "Route",
 	Device:      "/dev/video0",
-	Width:       640,
-	Height:      480,
+	Width:       1280,
+	Height:      720,
 	Framerate:   30,
-	Bitrate:     1_000_000,
+	Bitrate:     600_000,
 }
 
 var InteriorCam = utils.PipelineConfig{
@@ -35,7 +35,7 @@ var InteriorCam = utils.PipelineConfig{
 	Width:       1280,
 	Height:      720,
 	Framerate:   30,
-	Bitrate:     1_000_000,
+	Bitrate:     600_000,
 }
 
 var PedalsCam = utils.PipelineConfig{
@@ -44,7 +44,23 @@ var PedalsCam = utils.PipelineConfig{
 	Width:       1280,
 	Height:      720,
 	Framerate:   30,
-	Bitrate:     1_000_000,
+	Bitrate:     600_000,
+}
+
+var Radio = utils.AudioPipelineConfig{
+	Name:       "Radio",
+	Device:     "hw:2,0",
+	SampleRate: 48000,
+	Channels:   1,
+	Bitrate:    24000,
+}
+
+var InteriorMic = utils.AudioPipelineConfig{
+	Name:       "Habitacle",
+	Device:     "hw:3,0",
+	SampleRate: 48000,
+	Channels:   2,
+	Bitrate:    48000,
 }
 
 func updateMetadata() {
@@ -108,6 +124,8 @@ func main() {
 	fakeMetadata = flag.Bool("fake-metadata", false, "Use fake metadata")
 	noStream := flag.Bool("no-stream", false, "Disable video/audio streaming")
 	fakeStream := flag.Bool("fake-stream", false, "Use fake video/audio stream")
+	noCam := flag.Bool("no-cam", false, "Disable all video streams")
+	noMic := flag.Bool("no-mic", false, "Disable all audio streams")
 	flag.Parse()
 
 	utils.CreateLogger(debug)
@@ -129,23 +147,35 @@ func main() {
 		go roomMetadataUpdater()
 	}
 
-	if !*noStream {
+	if !*noStream && (!*noCam || !*noMic) {
 		utils.InitGStreamer()
 
 		room := utils.ConnectToLiveKitRoom()
 		defer room.Disconnect()
 
-		RoadPipeline := scripts.AddVideoStream(room, RoadCam, *fake || *fakeStream)
-		defer RoadPipeline.Stop()
-		defer RoadPipeline.Free()
+		if !*noCam {
+			RoadCamPipeline := scripts.AddVideoStream(room, RoadCam, *fake || *fakeStream)
+			defer RoadCamPipeline.Stop()
+			defer RoadCamPipeline.Free()
 
-		InteriorPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
-		defer InteriorPipeline.Stop()
-		defer InteriorPipeline.Free()
+			// InteriorCamPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
+			// defer InteriorCamPipeline.Stop()
+			// defer InteriorCamPipeline.Free()
 
-		// PedalsPipeline := scripts.AddVideoStream(room, PedalsCam, true)
-		// defer PedalsPipeline.Stop()
-		// defer PedalsPipeline.Free()
+			// PedalsCamPipeline := scripts.AddVideoStream(room, PedalsCam, true)
+			// defer PedalsCamPipeline.Stop()
+			// defer PedalsCamPipeline.Free()
+		}
+
+		if !*noMic {
+			RadioMicPipeline := scripts.AddAudioStream(room, Radio, *fake || *fakeStream)
+			defer RadioMicPipeline.Stop()
+			defer RadioMicPipeline.Free()
+
+			InteriorMicPipeline := scripts.AddAudioStream(room, InteriorMic, *fake || *fakeStream)
+			defer InteriorMicPipeline.Stop()
+			defer InteriorMicPipeline.Free()
+		}
 	}
 
 	select {}

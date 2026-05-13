@@ -45,19 +45,19 @@ func AddVideoStream(room *lksdk.Room, cfg utils.PipelineConfig, fakeStream bool)
 	return pipeline
 }
 
-func AddAudioStream(room *lksdk.Room, cfg utils.PipelineConfig, fakeStream bool) *utils.GStreamerPipeline {
+func AddAudioStream(room *lksdk.Room, cfg utils.AudioPipelineConfig, fakeStream bool) *utils.GStreamerPipeline {
 	if fakeStream {
 		utils.Log.Infow("Using fake audio stream (sine wave).")
 	} else {
 		utils.Log.Infow("Using microphone audio stream.")
 	}
 
-	pipeline, err := utils.NewAudioPipeline(cfg.Device, fakeStream)
+	pipeline, err := utils.NewAudioPipeline(cfg, fakeStream)
 	if err != nil {
 		utils.Log.Fatalw("Failed to create audio pipeline.", "error", err)
 	}
 
-	track, err := utils.PublishAudioTrack(room, cfg.Name)
+	track, err := utils.PublishAudioTrack(room, cfg)
 	if err != nil {
 		pipeline.Free()
 		utils.Log.Fatalw("Failed to publish audio track.", "error", err)

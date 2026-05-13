@@ -136,6 +136,15 @@ type PipelineConfig struct {
 	Bitrate   int
 }
 
+// AudioPipelineConfig holds the configuration for an audio capture pipeline.
+type AudioPipelineConfig struct {
+	Name       string
+	Device     string
+	SampleRate int
+	Channels   int
+	Bitrate    int
+}
+
 // NewVideoPipeline builds a GStreamer VP9 pipeline from a V4L2 MJPEG camera or
 // a SMPTE test pattern, depending on fakeStream.
 // LiveKit/pion handles RTP packetisation via WriteSample.
@@ -180,29 +189,38 @@ func NewVideoPipeline(cfg PipelineConfig, fakeStream bool) (*GStreamerPipeline, 
 
 // NewAudioPipeline builds a GStreamer pipeline for an ALSA audio device and returns
 // an RTP Opus stream via appsink.
-//
-// alsaDevice: e.g. "hw:1,0"
-func NewAudioPipeline(alsaDevice string, fakeStream bool) (*GStreamerPipeline, error) {
+func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipeline, error) {
+	if cfg.SampleRate <= 0 {
+		cfg.SampleRate = 48000
+	}
+	if cfg.Channels <= 0 {
+		cfg.Channels = 2
+	}
+	if cfg.Bitrate <= 0 {
+		cfg.Bitrate = 96000
+	}
+
 	var pipelineStr string
 	if fakeStream {
 		pipelineStr = fmt.Sprintf(
 			"audiotestsrc wave=sine freq=440 is-live=true ! "+
-				"audio/x-raw,format=S16LE,rate=48000,channels=2 ! "+
-				"opusenc bitrate=96000 ! "+
+				"audio/x-raw,format=S16LE,rate=%d,channels=%d ! "+
+				"opusenc bitrate=%d ! "+
 				"rtpopuspay pt=111 ! "+
 				"appsink name=sink max-buffers=4 drop=true sync=false",
+			cfg.SampleRate, cfg.Channels, cfg.Bitrate,
 		)
 	} else {
-		if err := checkAudioDevice(alsaDevice); err != nil {
+		if err := checkAudioDevice(cfg.Device); err != nil {
 			return nil, err
 		}
 		pipelineStr = fmt.Sprintf(
 			"alsasrc device=%s ! "+
-				"audio/x-raw,format=S16LE,rate=48000,channels=2 ! "+
-				"opusenc bitrate=96000 ! "+
+				"audio/x-raw,format=S16LE,rate=%d,channels=%d ! "+
+				"opusenc bitrate=%d ! "+
 				"rtpopuspay pt=111 ! "+
 				"appsink name=sink max-buffers=4 drop=true sync=false",
-			alsaDevice,
+			cfg.Device, cfg.SampleRate, cfg.Channels, cfg.Bitrate,
 		)
 	}
 
@@ -259,13 +277,21 @@ func checkVideoDevice(devicePath string) error {
 	return nil
 }
 
-// checkAudioDevice verifies that the ALSA device node exists and is readable.
+// checkAudioDevice verifies that the ALSA device exists by checking /proc/asound/.
+// It accepts the hw:X,Y format and verifies that card X is present.
 func checkAudioDevice(device string) error {
-	if _, err := os.Stat("/dev/snd/" + device); err != nil {
+	// Parse card number from "hw:X,Y" or "plughw:X,Y"
+	var cardNum int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(strings.TrimPrefix(device, "plughw:"), "hw:"), "%d", &cardNum); err != nil {
+		// Non-standard name (e.g. "default"): skip the check
+		return nil
+	}
+	cardPath := fmt.Sprintf("/proc/asound/card%d", cardNum)
+	if _, err := os.Stat(cardPath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("audio device not found: %s", device)
+			return fmt.Errorf("audio card not found: %s (check 'arecord -l')", device)
 		}
-		return fmt.Errorf("cannot stat audio device %s: %w", device, err)
+		return fmt.Errorf("cannot check audio device %s: %w", device, err)
 	}
 	return nil
 }
@@ -492,18 +518,18 @@ func PublishVideoTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTr
 }
 
 // PublishAudioTrack creates and publishes an audio LocalSampleTrack to the LiveKit room.
-func PublishAudioTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTrack, error) {
+func PublishAudioTrack(room *lksdk.Room, cfg AudioPipelineConfig) (*lksdk.LocalSampleTrack, error) {
 	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
 		MimeType:  webrtc.MimeTypeOpus,
-		ClockRate: 48000,
-		Channels:  2,
+		ClockRate: uint32(cfg.SampleRate),
+		Channels:  uint16(cfg.Channels),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create audio sample track: %w", err)
 	}
 
 	_, err = room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-		Name:   trackName,
+		Name:   cfg.Name,
 		Source: livekit.TrackSource_MICROPHONE,
 	})
 	if err != nil {
