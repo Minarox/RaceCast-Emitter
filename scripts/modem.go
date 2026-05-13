@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"os/exec"
 	"racecast-emitter/utils"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // https://www.waveshare.com/wiki/RM520N-GL_5G_for_Jetson_Nano
@@ -19,53 +22,89 @@ type Modem struct {
 				Value string `json:"value"`
 			} `json:"signal-quality"`
 		} `json:"generic"`
-		Location struct {
-			GPS struct {
-				Longitude string   `json:"longitude"`
-				Latitude  string   `json:"latitude"`
-				Altitude  string   `json:"altitude"`
-				NMEA      []string `json:"nmea"`
-			} `json:"gps"`
-		} `json:"location"`
 	} `json:"modem"`
 }
 
+// atSerialPort is the AT command port for the Quectel RM520N-GL.
+// USB layout: ttyUSB0=DM, ttyUSB1=NMEA, ttyUSB2=AT, ttyUSB3=AT(PPP), ttyUSB4=modem.
+const atSerialPort = "/dev/ttyUSB3"
+
 var modemID string
 
-func parseSpeed(nmea []string) *float32 {
-	for _, line := range nmea {
-		if strings.HasPrefix(line, "$GPVTG") {
-			parts := strings.Split(line, ",")
-			if len(parts) > 7 {
-				return utils.ParseFloat32(parts[7])
-			}
-		}
+// sendATCommand sends an AT command directly to the modem's serial port,
+// bypassing ModemManager which blocks mmcli --command outside of debug mode.
+func sendATCommand(cmd string) (string, error) {
+	f, err := os.OpenFile(atSerialPort, os.O_RDWR|unix.O_NOCTTY, 0600)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", atSerialPort, err)
 	}
-	return nil
+	defer f.Close()
+
+	// Configure 115200 baud, 8N1, raw mode
+	t := unix.Termios{}
+	t.Iflag = unix.IGNPAR
+	t.Cflag = unix.CS8 | unix.CREAD | unix.CLOCAL | unix.B115200
+	t.Cc[unix.VMIN] = 0
+	t.Cc[unix.VTIME] = 20 // 2-second read timeout (units of 0.1 s)
+	if err := unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, &t); err != nil {
+		return "", fmt.Errorf("configure serial: %w", err)
+	}
+
+	if _, err := f.Write([]byte(cmd + "\r")); err != nil {
+		return "", fmt.Errorf("write command: %w", err)
+	}
+
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	return string(buf[:n]), nil
 }
 
-func parsePrecision(nmea []string) (*int, *float32) {
-	for _, line := range nmea {
-		if strings.HasPrefix(line, "$GPGGA") {
-			parts := strings.Split(line, ",")
-			if len(parts) > 8 {
-				return utils.ParseInt(parts[7]), utils.ParseFloat32(parts[8])
-			}
-		}
+// parseGPSLocation retrieves GPS position via AT+QGPSLOC=2 sent directly to the serial port.
+// AT+QGPSLOC=2 response fields (comma-separated after the prefix):
+// UTC, lat, lon, hdop, alt, fix, cog, spkm, spkn, date, nsat
+func parseGPSLocation() (lat, lon, alt, hdop, speed *float32, satellites *int) {
+	out, err := sendATCommand("AT+QGPSLOC=2")
+	if err != nil {
+		utils.Log.Warnw("Cannot get GPS location.", "err", err)
+		return
 	}
-	return nil, nil
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "+QGPSLOC:") {
+			continue
+		}
+		idx := strings.Index(line, "+QGPSLOC:")
+		data := strings.TrimSpace(line[idx+len("+QGPSLOC:"):])
+		data = strings.Trim(data, "'\"")
+		parts := strings.Split(data, ",")
+		if len(parts) < 11 {
+			break
+		}
+		lat = utils.ParseFloat32(parts[1])
+		lon = utils.ParseFloat32(parts[2])
+		hdop = utils.ParseFloat32(parts[3])
+		alt = utils.ParseFloat32(parts[4])
+		speed = utils.ParseFloat32(parts[7]) // spkm (km/h)
+		satellites = utils.ParseInt(parts[10])
+		break
+	}
+	return
 }
 
 func SetupModem() {
-	modem, err := exec.Command("sh", "-c", `mmcli -L | grep 'QUECTEL' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
+	modem, err := exec.Command("sh", "-c", `mmcli -L | grep 'Quectel' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
 	if err != nil {
 		utils.Log.Fatalw("Failed to get modem ID.", "details", err)
 	}
 	modemID = string(modem)
 
-	_, err = exec.Command("sh", "-c", `mmcli -m `+modemID+` --location-enable-gps-raw --location-enable-gps-nmea`).Output()
+	// Activate GPS directly via the AT serial port.
+	// mmcli --command is blocked outside of debug mode; direct tty access bypasses this.
+	// +CME ERROR: 504 means GPS is already active.
+	response, err := sendATCommand("AT+QGPS=1")
 	if err != nil {
-		utils.Log.Errorw("Failed to enable GPS.", "details", err)
+		utils.Log.Errorw("Failed to send AT+QGPS=1.", "err", err)
+	} else if !strings.Contains(response, "OK") && !strings.Contains(response, "504") {
+		utils.Log.Errorw("Unexpected GPS enable response.", "response", response)
 	}
 }
 
@@ -82,21 +121,8 @@ func GetModemData() map[string]any {
 	tech := modem.Modem.Generic.AccessTechnologies
 	signal := utils.ParseInt(modem.Modem.Generic.SignalQuality.Value)
 
-	// Parse location data
-	locationOutput, _ := exec.Command("sh", "-c", `mmcli -m `+modemID+` --location-get -J`).Output()
-
-	var location Modem
-	if err := json.Unmarshal(locationOutput, &location); err != nil {
-		utils.Log.Warnw("Error parsing location data.", "details", err)
-		return nil
-	}
-
-	gps := location.Modem.Location.GPS
-	longitude := utils.ParseFloat32(gps.Longitude)
-	latitude := utils.ParseFloat32(gps.Latitude)
-	altitude := utils.ParseFloat32(gps.Altitude)
-	speed := parseSpeed(gps.NMEA)
-	satellites, hdop := parsePrecision(gps.NMEA)
+	// Get GPS location via AT+QGPSLOC=2 (mmcli location API not supported on this modem)
+	latitude, longitude, altitude, hdop, speed, satellites := parseGPSLocation()
 
 	var data = map[string]any{
 		"tech":   tech,
