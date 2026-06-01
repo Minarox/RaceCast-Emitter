@@ -160,7 +160,7 @@ func NewVideoPipeline(cfg VideoPipelineConfig, fakeStream bool) (*GStreamerPipel
 				"video/x-raw,format=I420,width=%d,height=%d,framerate=%d/1 ! "+
 				"nvvidconv ! "+
 				"video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
+			"nvv4l2av1enc bitrate=%d iframeinterval=60 ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
 			cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 		)
@@ -204,10 +204,12 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 	if fakeStream {
 		pipelineStr = fmt.Sprintf(
 			"audiotestsrc wave=sine freq=440 is-live=true ! "+
-				"audio/x-raw,format=S16LE,rate=%d,channels=%d ! "+
-				"opusenc bitrate=%d ! "+
-				"rtpopuspay pt=111 ! "+
-				"appsink name=sink max-buffers=4 drop=true sync=false",
+				"audioconvert ! "+ 
+				"audioresample ! "+
+				"audio/x-raw,rate=%d,channels=%d ! "+
+				"opusenc bitrate=%d frame-size=20 perfect-timestamp=true audio-type=voice ! "+
+				"queue leaky=downstream max-size-buffers=2 ! "+
+				"appsink name=sink max-buffers=8 drop=true sync=false",
 			cfg.SampleRate, cfg.Channels, cfg.Bitrate,
 		)
 	} else {
@@ -216,10 +218,12 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 		}
 		pipelineStr = fmt.Sprintf(
 			"alsasrc device=%s ! "+
-				"audio/x-raw,format=S16LE,rate=%d,channels=%d ! "+
-				"opusenc bitrate=%d ! "+
-				"rtpopuspay pt=111 ! "+
-				"appsink name=sink max-buffers=4 drop=true sync=false",
+				"audioconvert ! "+ 
+				"audioresample ! "+
+				"audio/x-raw,rate=%d,channels=%d ! "+
+				"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
+				"queue leaky=downstream max-size-buffers=2 ! "+
+				"appsink name=sink max-buffers=8 drop=true sync=false",
 			cfg.Device, cfg.SampleRate, cfg.Channels, cfg.Bitrate,
 		)
 	}
@@ -236,7 +240,7 @@ func buildMJPEGPipeline(cfg VideoPipelineConfig) string {
 			"nvv4l2decoder mjpeg=1 ! "+
 			"nvvidconv ! "+
 			"video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
+			"nvv4l2av1enc bitrate=%d iframeinterval=60 ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
 		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 	)
@@ -252,7 +256,7 @@ func buildYUYVPipeline(cfg VideoPipelineConfig) string {
 			"video/x-raw,format=I420 ! "+
 			"nvvidconv ! "+
 			"video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2vp9enc bitrate=%d iframeinterval=60 ! "+
+			"nvv4l2av1enc bitrate=%d iframeinterval=60 ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
 		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 	)
@@ -521,8 +525,8 @@ func PublishVideoTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTr
 func PublishAudioTrack(room *lksdk.Room, cfg AudioPipelineConfig) (*lksdk.LocalSampleTrack, error) {
 	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
 		MimeType:  webrtc.MimeTypeOpus,
-		ClockRate: uint32(cfg.SampleRate),
-		Channels:  uint16(cfg.Channels),
+		ClockRate: 48000,
+		Channels:  2,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create audio sample track: %w", err)

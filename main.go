@@ -13,7 +13,7 @@ import (
 
 var (
 	debug        *bool
-	fake 	     *bool
+	fake         *bool
 	noUPS        *bool
 	noModem      *bool
 	noMetadata   *bool
@@ -26,7 +26,7 @@ var RoadCam = utils.VideoPipelineConfig{
 	Width:       1280,
 	Height:      720,
 	Framerate:   30,
-	Bitrate:     600_000,
+	Bitrate:     1_000_000,
 }
 
 var InteriorCam = utils.VideoPipelineConfig{
@@ -40,11 +40,11 @@ var InteriorCam = utils.VideoPipelineConfig{
 
 var PedalsCam = utils.VideoPipelineConfig{
 	Name:        "Pedals",
-	Device:      "/dev/video2",
+	Device:      "/dev/video1",
 	Width:       1280,
 	Height:      720,
 	Framerate:   30,
-	Bitrate:     600_000,
+	Bitrate:     300_000,
 }
 
 var Radio = utils.AudioPipelineConfig{
@@ -162,19 +162,19 @@ func main() {
 			// defer InteriorCamPipeline.Stop()
 			// defer InteriorCamPipeline.Free()
 
-			// PedalsCamPipeline := scripts.AddVideoStream(room, PedalsCam, true)
+			// PedalsCamPipeline := scripts.AddVideoStream(room, PedalsCam, *fake || *fakeStream)
 			// defer PedalsCamPipeline.Stop()
 			// defer PedalsCamPipeline.Free()
 		}
 
 		if !*noMic {
-			RadioMicPipeline := scripts.AddAudioStream(room, Radio, *fake || *fakeStream)
-			defer RadioMicPipeline.Stop()
-			defer RadioMicPipeline.Free()
+			// RadioMicPipeline := scripts.AddAudioStream(room, Radio, *fake || *fakeStream)
+			// defer RadioMicPipeline.Stop()
+			// defer RadioMicPipeline.Free()
 
-			InteriorMicPipeline := scripts.AddAudioStream(room, InteriorMic, *fake || *fakeStream)
-			defer InteriorMicPipeline.Stop()
-			defer InteriorMicPipeline.Free()
+			// InteriorMicPipeline := scripts.AddAudioStream(room, InteriorMic, *fake || *fakeStream)
+			// defer InteriorMicPipeline.Stop()
+			// defer InteriorMicPipeline.Free()
 		}
 	}
 
