@@ -145,8 +145,10 @@ type AudioPipelineConfig struct {
 	Bitrate    int
 }
 
-// NewVideoPipeline builds a GStreamer VP9 pipeline from a V4L2 MJPEG camera or
-// a SMPTE test pattern, depending on fakeStream.
+// NewVideoPipeline builds a GStreamer AV1 pipeline from a V4L2 camera or a SMPTE
+// test pattern, depending on fakeStream. All paths use the Jetson hardware encoder
+// (nvv4l2av1enc) followed by av1parse to produce OBU-aligned buffers that
+// pion/WebRTC can packetise correctly as RTP AV1.
 // LiveKit/pion handles RTP packetisation via WriteSample.
 func NewVideoPipeline(cfg VideoPipelineConfig, fakeStream bool) (*GStreamerPipeline, error) {
 	if cfg.Bitrate <= 0 {
@@ -160,8 +162,8 @@ func NewVideoPipeline(cfg VideoPipelineConfig, fakeStream bool) (*GStreamerPipel
 				"video/x-raw,format=I420,width=%d,height=%d,framerate=%d/1 ! "+
 				"nvvidconv ! "+
 				"video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2av1enc bitrate=%d iframeinterval=60 ! "+
-			"appsink name=sink max-buffers=2 drop=true sync=false",
+				"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
+				"appsink name=sink max-buffers=2 drop=true sync=false",
 			cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 		)
 	} else {
@@ -240,7 +242,7 @@ func buildMJPEGPipeline(cfg VideoPipelineConfig) string {
 			"nvv4l2decoder mjpeg=1 ! "+
 			"nvvidconv ! "+
 			"video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2av1enc bitrate=%d iframeinterval=60 ! "+
+			"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
 		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 	)
@@ -256,7 +258,7 @@ func buildYUYVPipeline(cfg VideoPipelineConfig) string {
 			"video/x-raw,format=I420 ! "+
 			"nvvidconv ! "+
 			"video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2av1enc bitrate=%d iframeinterval=60 ! "+
+			"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
 		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
 	)
@@ -488,7 +490,7 @@ func (p *GStreamerPipeline) loop() {
 			continue
 		}
 
-		// Write the raw VP9 bitstream as a media sample; LiveKit/pion handles
+		// Write the raw codec bitstream as a media sample; LiveKit/pion handles
 		// RTP packetisation (SSRC, PT, sequence numbers) internally.
 		if err := track.WriteSample(media.Sample{Data: data, Duration: dur}, nil); err != nil {
 			if !writeWarned {
@@ -502,7 +504,7 @@ func (p *GStreamerPipeline) loop() {
 // PublishVideoTrack creates and publishes a video LocalSampleTrack to the LiveKit room.
 func PublishVideoTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTrack, error) {
 	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
-		MimeType:  webrtc.MimeTypeVP9,
+		MimeType:  webrtc.MimeTypeAV1,
 		ClockRate: 90000,
 		Channels:  0,
 	})

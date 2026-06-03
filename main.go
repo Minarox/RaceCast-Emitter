@@ -100,7 +100,7 @@ func updateMetadata() {
 
 func roomMetadataUpdater() {
 	if !*noUPS && !*fake {
-		scripts.CreateUPSReader(0x41, 1)
+		scripts.CreateUPSReader(0x41, 7)
 		defer scripts.CloseUPSReader()
 	}
 
