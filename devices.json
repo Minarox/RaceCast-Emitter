@@ -1,0 +1,49 @@
+{
+    "cameras": [
+        {
+            "enabled": true,
+            "name": "Route",
+            "device": "/dev/video0",
+            "width": 1920,
+            "height": 1080,
+            "framerate": 30,
+            "bitrate": 1000000
+        },
+        {
+            "enabled": false,
+            "name": "Habitacle",
+            "device": "/dev/video1",
+            "width": 1280,
+            "height": 720,
+            "framerate": 30,
+            "bitrate": 600000
+        },
+        {
+            "enabled": false,
+            "name": "Pedals",
+            "device": "/dev/video1",
+            "width": 1280,
+            "height": 720,
+            "framerate": 30,
+            "bitrate": 300000
+        }
+    ],
+    "microphones": [
+        {
+            "enabled": false,
+            "name": "Radio",
+            "device": "hw:2,0",
+            "sample_rate": 48000,
+            "channels": 1,
+            "bitrate": 24000
+        },
+        {
+            "enabled": false,
+            "name": "Habitacle",
+            "device": "hw:3,0",
+            "sample_rate": 48000,
+            "channels": 2,
+            "bitrate": 48000
+        }
+    ]
+}

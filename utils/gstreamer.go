@@ -128,21 +128,23 @@ func DetectCameraFormat(device string) (CameraFormat, error) {
 
 // VideoPipelineConfig holds the configuration for a video capture pipeline.
 type VideoPipelineConfig struct {
-	Name      string
-	Device    string
-	Width     int
-	Height    int
-	Framerate int
-	Bitrate   int
+	Name      string `json:"name"`
+	Device    string `json:"device"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	Framerate int    `json:"framerate"`
+	Bitrate   int    `json:"bitrate"`
+	Enabled   bool   `json:"enabled"`
 }
 
 // AudioPipelineConfig holds the configuration for an audio capture pipeline.
 type AudioPipelineConfig struct {
-	Name       string
-	Device     string
-	SampleRate int
-	Channels   int
-	Bitrate    int
+	Name       string `json:"name"`
+	Device     string `json:"device"`
+	SampleRate int    `json:"sample_rate"`
+	Channels   int    `json:"channels"`
+	Bitrate    int    `json:"bitrate"`
+	Enabled    bool   `json:"enabled"`
 }
 
 // NewVideoPipeline builds a GStreamer AV1 pipeline from a V4L2 camera or a SMPTE

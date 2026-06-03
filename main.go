@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"os"
+	"strconv"
 	"time"
 
 	"racecast-emitter/scripts"
@@ -20,47 +22,21 @@ var (
 	fakeMetadata *bool
 )
 
-var RoadCam = utils.VideoPipelineConfig{
-	Name:        "Route",
-	Device:      "/dev/video0",
-	Width:       1280,
-	Height:      720,
-	Framerate:   30,
-	Bitrate:     1_000_000,
+type DevicesConfig struct {
+	Cameras     []utils.VideoPipelineConfig `json:"cameras"`
+	Microphones []utils.AudioPipelineConfig `json:"microphones"`
 }
 
-var InteriorCam = utils.VideoPipelineConfig{
-	Name:        "Habitacle",
-	Device:      "/dev/video1",
-	Width:       1280,
-	Height:      720,
-	Framerate:   30,
-	Bitrate:     600_000,
-}
-
-var PedalsCam = utils.VideoPipelineConfig{
-	Name:        "Pedals",
-	Device:      "/dev/video1",
-	Width:       1280,
-	Height:      720,
-	Framerate:   30,
-	Bitrate:     300_000,
-}
-
-var Radio = utils.AudioPipelineConfig{
-	Name:       "Radio",
-	Device:     "hw:2,0",
-	SampleRate: 48000,
-	Channels:   1,
-	Bitrate:    24000,
-}
-
-var InteriorMic = utils.AudioPipelineConfig{
-	Name:       "Habitacle",
-	Device:     "hw:3,0",
-	SampleRate: 48000,
-	Channels:   2,
-	Bitrate:    48000,
+func loadDevicesConfig(path string) DevicesConfig {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		utils.Log.Fatalw("Failed to read devices config.", "path", path, "error", err)
+	}
+	var cfg DevicesConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		utils.Log.Fatalw("Failed to parse devices config.", "path", path, "error", err)
+	}
+	return cfg
 }
 
 func updateMetadata() {
@@ -100,7 +76,15 @@ func updateMetadata() {
 
 func roomMetadataUpdater() {
 	if !*noUPS && !*fake {
-		scripts.CreateUPSReader(0x41, 7)
+		addr64, err := strconv.ParseUint(os.Getenv("UPS_I2C_ADDR"), 0, 8)
+		if err != nil {
+			utils.Log.Fatalw("Invalid UPS_I2C_ADDR value.", "error", err)
+		}
+		bus, err := strconv.Atoi(os.Getenv("UPS_I2C_BUS"))
+		if err != nil {
+			utils.Log.Fatalw("Invalid UPS_I2C_BUS value.", "error", err)
+		}
+		scripts.CreateUPSReader(uint8(addr64), bus)
 		defer scripts.CloseUPSReader()
 	}
 
@@ -139,6 +123,12 @@ func main() {
 	utils.SetLevelFromEnv(os.Getenv("LOG_LEVEL"))
 	utils.Log.Infow("Launching program.", "process_id", os.Getpid())
 
+	// Si l'adresse ou le bus de l'UPS n'existe pas dans le .env, on désactive la lecture de l'UPS
+	if os.Getenv("UPS_I2C_ADDR") == "" || os.Getenv("UPS_I2C_BUS") == "" {
+		utils.Log.Warn("UPS I2C address or bus not set in .env. Disabling UPS reader.")
+		noUPS = utils.BoolPtr(true)
+	}
+
 	if (!*noStream || (!*noMetadata && (!*noUPS || !*noModem))) {
 		utils.SetupLiveKitRoom()
 	}
@@ -150,31 +140,33 @@ func main() {
 	if !*noStream && (!*noCam || !*noMic) {
 		utils.InitGStreamer()
 
+		devices := loadDevicesConfig("devices.json")
+
 		room := utils.ConnectToLiveKitRoom()
 		defer room.Disconnect()
 
 		if !*noCam {
-			RoadCamPipeline := scripts.AddVideoStream(room, RoadCam, *fake || *fakeStream)
-			defer RoadCamPipeline.Stop()
-			defer RoadCamPipeline.Free()
-
-			// InteriorCamPipeline := scripts.AddVideoStream(room, InteriorCam, *fake || *fakeStream)
-			// defer InteriorCamPipeline.Stop()
-			// defer InteriorCamPipeline.Free()
-
-			// PedalsCamPipeline := scripts.AddVideoStream(room, PedalsCam, *fake || *fakeStream)
-			// defer PedalsCamPipeline.Stop()
-			// defer PedalsCamPipeline.Free()
+			for _, cam := range devices.Cameras {
+				if !cam.Enabled {
+					utils.Log.Infow("Camera disabled, skipping.", "name", cam.Name)
+					continue
+				}
+				p := scripts.AddVideoStream(room, cam, *fake || *fakeStream)
+				defer p.Stop()
+				defer p.Free()
+			}
 		}
 
 		if !*noMic {
-			// RadioMicPipeline := scripts.AddAudioStream(room, Radio, *fake || *fakeStream)
-			// defer RadioMicPipeline.Stop()
-			// defer RadioMicPipeline.Free()
-
-			// InteriorMicPipeline := scripts.AddAudioStream(room, InteriorMic, *fake || *fakeStream)
-			// defer InteriorMicPipeline.Stop()
-			// defer InteriorMicPipeline.Free()
+			for _, mic := range devices.Microphones {
+				if !mic.Enabled {
+					utils.Log.Infow("Microphone disabled, skipping.", "name", mic.Name)
+					continue
+				}
+				p := scripts.AddAudioStream(room, mic, *fake || *fakeStream)
+				defer p.Stop()
+				defer p.Free()
+			}
 		}
 	}
 

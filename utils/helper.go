@@ -5,6 +5,10 @@ import (
 	"strconv"
 )
 
+func BoolPtr(b bool) *bool {
+	return &b
+}
+
 func RoundToTwoDecimals(n float64) float64 {
     return math.Round(n*100) / 100
 }
