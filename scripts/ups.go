@@ -82,7 +82,7 @@ func getPower_W() float64 {
 func CreateUPSReader(addr uint8, bus int) *i2c.I2C {
 	if ups == nil {
 		lock.Lock()
-        defer lock.Unlock()
+		defer lock.Unlock()
 
 		if ups == nil {
 			connection, err := i2c.NewI2C(addr, bus)
@@ -125,11 +125,14 @@ func GetUPSData() map[string]any {
 }
 
 func GetFakeUPSData() map[string]any {
+	t := float64(time.Now().Unix())
+	v := 12 + 2*math.Sin(t/10)
+	a := 1 + math.Sin(t/5)
 	return map[string]any{
-		"v": utils.RoundToTwoDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10)),
-		"a": utils.RoundToTwoDecimals(1 + math.Sin(float64(time.Now().Unix())/5)),
-		"w": utils.RoundToTwoDecimals(12 + 2*math.Sin(float64(time.Now().Unix())/10) * (1 + math.Sin(float64(time.Now().Unix())/5))),
-		"p": utils.RoundToTwoDecimals(50 + 50*math.Sin(float64(time.Now().Unix())/10)),
+		"v": utils.RoundToTwoDecimals(v),
+		"a": utils.RoundToTwoDecimals(a),
+		"w": utils.RoundToTwoDecimals(v * a),
+		"p": utils.RoundToTwoDecimals(50 + 50*math.Sin(t/10)),
 	}
 }
 

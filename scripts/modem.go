@@ -1,143 +1,346 @@
 package scripts
 
+// References:
+// https://www.waveshare.com/wiki/RM520N-GL_5G_for_Jetson_Nano
+// Quectel RG520N/RG52xF/RM520N/RM530N Series AT Commands Manual
+
 import (
-	"encoding/json"
-	"fmt"
 	"math/rand"
-	"os/exec"
-	"racecast-emitter/utils"
+	"os"
 	"strings"
+	"sync"
+	"time"
+
+	"go.bug.st/serial"
+	"racecast-emitter/utils"
 )
 
-// https://www.waveshare.com/wiki/RM520N-GL_5G_for_Jetson_Nano
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-type Modem struct {
-	Modem struct {
-		Generic struct {
-			AccessTechnologies any `json:"access-technologies"`
-			SignalQuality      struct {
-				Value string `json:"value"`
-			} `json:"signal-quality"`
-		} `json:"generic"`
-		Location struct {
-			GPS struct {
-				Longitude string   `json:"longitude"`
-				Latitude  string   `json:"latitude"`
-				Altitude  string   `json:"altitude"`
-				NMEA      []string `json:"nmea"`
-			} `json:"gps"`
-		} `json:"location"`
-	} `json:"modem"`
+// atConn holds the exclusive serial connection to the modem's AT interface.
+type atConn struct {
+	mu   sync.Mutex
+	port serial.Port
 }
 
-var modemID string
-
-func parseSpeed(nmea []string) *float32 {
-	for _, line := range nmea {
-		if strings.HasPrefix(line, "$GPVTG") {
-			parts := strings.Split(line, ",")
-			if len(parts) > 7 {
-				return utils.ParseFloat32(parts[7])
-			}
-		}
-	}
-	return nil
+// modemCache holds the latest values written by the background polling goroutine.
+// Reads and writes are guarded by mu so GetModemData never blocks on serial I/O.
+type modemCache struct {
+	mu     sync.RWMutex
+	tech   string
+	signal *int
+	lat    *float32
+	lon    *float32
+	alt    *float32
+	spd    *float32
+	sat    *int
+	hdop   *float32
 }
 
-func parsePrecision(nmea []string) (*int, *float32) {
-	for _, line := range nmea {
-		if strings.HasPrefix(line, "$GPGGA") {
-			parts := strings.Split(line, ",")
-			if len(parts) > 8 {
-				return utils.ParseInt(parts[7]), utils.ParseFloat32(parts[8])
-			}
-		}
-	}
-	return nil, nil
-}
+// ── Package-level state ───────────────────────────────────────────────────────
 
+var (
+	conn  *atConn
+	cache modemCache
+)
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+// SetupModem opens the AT serial port, configures GNSS, and enables XTRA
+// auto-download so the first GPS fix is as fast as possible.
 func SetupModem() {
-	modem, err := exec.Command("sh", "-c", `mmcli -L | grep 'Quectel' | sed -n 's#.*/Modem/\([0-9]\+\).*#\1#p' | tr -d '\n'`).Output()
+	portPath := atPortPath()
+	port, err := serial.Open(portPath, &serial.Mode{
+		BaudRate: 115200,
+		DataBits: 8,
+		StopBits: serial.OneStopBit,
+		Parity:   serial.NoParity,
+	})
 	if err != nil {
-		utils.Log.Fatalw("Failed to get modem ID.", "details", err)
+		utils.Log.Fatalw("Failed to open modem AT port", "port", portPath, "error", err)
 	}
-	modemID = string(modem)
+	conn = &atConn{port: port}
 
-	_, err = exec.Command("sh", "-c", `mmcli -m `+modemID+` --location-enable-gps-raw --location-enable-gps-nmea`).Output()
-	if err != nil {
-		utils.Log.Errorw("Failed to enable GPS.", "details", err)
+	conn.send("ATE0")      // disable echo
+	conn.send("AT+CMEE=2") // verbose error codes
+
+	// Enable XTRA assistance before starting GPS so the first fix benefits from
+	// the almanac. The modem auto-downloads a fresh file whenever it expires.
+	conn.send("AT+QGPSXTRA=1")
+	conn.send("AT+QGPSXTRAAUTODL=1")
+
+	// All GNSS constellations: GPS + GLONASS + BeiDou + Galileo + SBAS + QZSS
+	conn.send(`AT+QGPSCFG="gnssconfig",7`)
+
+	// Start GPS engine (idempotent: skip if already running)
+	if !strings.Contains(conn.send("AT+QGPS?"), "+QGPS: 1") {
+		conn.send("AT+QGPS=1")
 	}
+
+	// Poll modem and GPS independently from the main update goroutine so that
+	// serial latency (~6 s worst case for two AT commands) does not block the
+	// UPS read and LiveKit publish cycle.
+	go pollLoop()
 }
 
+// GetModemData returns a snapshot of the latest cached modem and GPS data.
+// It returns immediately; the cache is kept fresh by the background poll goroutine.
+// signal is a percentage (0–100); GPS fields are nil until the first fix.
 func GetModemData() map[string]any {
-	// Parse modem data
-	modemOutput, _ := exec.Command("sh", "-c", `mmcli -m `+modemID+` -J`).Output()
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
 
-	var modem Modem
-	if err := json.Unmarshal(modemOutput, &modem); err != nil {
-		utils.Log.Warnw("Error parsing modem data.", "details", err)
-		return nil
+	data := map[string]any{
+		"tech":   cache.tech,
+		"signal": cache.signal,
+		"lat":    cache.lat,
+		"lon":    cache.lon,
+		"alt":    cache.alt,
+		"spd":    cache.spd,
+		"sat":    cache.sat,
+		"hdop":   cache.hdop,
 	}
-
-	tech := modem.Modem.Generic.AccessTechnologies
-	signal := utils.ParseInt(modem.Modem.Generic.SignalQuality.Value)
-
-	// Parse location data
-	locationOutput, _ := exec.Command("sh", "-c", `mmcli -m `+modemID+` --location-get -J`).Output()
-
-	var location Modem
-	if err := json.Unmarshal(locationOutput, &location); err != nil {
-		utils.Log.Warnw("Error parsing location data.", "details", err)
-		return nil
-	}
-
-	gps := location.Modem.Location.GPS
-	longitude := utils.ParseFloat32(gps.Longitude)
-	latitude := utils.ParseFloat32(gps.Latitude)
-	altitude := utils.ParseFloat32(gps.Altitude)
-	speed := parseSpeed(gps.NMEA)
-	satellites, hdop := parsePrecision(gps.NMEA)
-
-	var data = map[string]any{
-		"tech":   tech,
-		"signal": signal,
-		"lon":    longitude,
-		"lat":    latitude,
-		"alt":    altitude,
-		"spd":    speed,
-		"sat":    satellites,
-		"hdop":   hdop,
-	}
-
 	utils.Log.Infow("Modem Data", "payload", data)
 	return data
 }
 
+// GetFakeModemData returns randomised data for use in fake/demo mode.
 func GetFakeModemData() map[string]any {
-	// randomize around Paris by default
-	baseLon := 2.349014
-	baseLat := 48.864716
+	baseLat, baseLon := 48.864716, 2.349014 // Paris
 
-	// tech selection
-	techs := []string{"LTE", "5G", "3G"}
-	tech := techs[rand.Intn(len(techs))]
-
-	signal := 30 + rand.Intn(71) // 30-100
-	lon := baseLon + (rand.Float64()-0.5)/100.0 // small jitter
-	lat := baseLat + (rand.Float64()-0.5)/100.0
-	alt := 5.0 + rand.Float64()*50.0
-	spd := rand.Float64() * 30.0
-	sat := 4 + rand.Intn(9) // 4-12
-	hdop := 0.5 + rand.Float64()*2.5
+	signal := 30 + rand.Intn(71)
+	lat := float32(baseLat + (rand.Float64()-0.5)/100.0)
+	lon := float32(baseLon + (rand.Float64()-0.5)/100.0)
+	alt := float32(5.0 + rand.Float64()*50.0)
+	spd := float32(rand.Float64() * 30.0)
+	sat := 4 + rand.Intn(9)
+	hdop := float32(0.5 + rand.Float64()*2.5)
+	tech := []string{"LTE", "5G", "3G"}[rand.Intn(3)]
 
 	return map[string]any{
 		"tech":   tech,
-		"signal": signal,
-		"lon":    utils.ParseFloat32(fmt.Sprintf("%f", lon)),
-		"lat":    utils.ParseFloat32(fmt.Sprintf("%f", lat)),
-		"alt":    utils.ParseFloat32(fmt.Sprintf("%.0f", alt)),
-		"spd":    utils.ParseFloat32(fmt.Sprintf("%.0f", spd)),
-		"sat":    utils.ParseInt(fmt.Sprintf("%d", sat)),
-		"hdop":   utils.ParseFloat32(fmt.Sprintf("%.2f", hdop)),
+		"signal": &signal,
+		"lat":    &lat,
+		"lon":    &lon,
+		"alt":    &alt,
+		"spd":    &spd,
+		"sat":    &sat,
+		"hdop":   &hdop,
 	}
+}
+
+// ── Background polling ────────────────────────────────────────────────────────
+
+// pollLoop runs in its own goroutine and refreshes the cache once per second.
+// It is decoupled from the main update loop so serial latency never delays
+// UPS reads or LiveKit publishes.
+func pollLoop() {
+	for {
+		start := time.Now()
+		fetchNetworkInfo()
+		fetchGPS()
+		if elapsed := time.Since(start); elapsed < time.Second {
+			time.Sleep(time.Second - elapsed)
+		}
+	}
+}
+
+// ── Data fetchers ─────────────────────────────────────────────────────────────
+
+// fetchNetworkInfo queries AT+QENG="servingcell" and writes the best available
+// technology label and signal percentage into the cache.
+func fetchNetworkInfo() {
+	resp := conn.send(`AT+QENG="servingcell"`)
+	utils.Log.Debugw("AT+QENG raw", "resp", resp)
+
+	var tech string
+	var signal *int
+
+	for _, line := range strings.Split(resp, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "+QENG:") {
+			continue
+		}
+		parts := splitCSV(strings.TrimSpace(strings.TrimPrefix(line, "+QENG:")))
+		if len(parts) == 0 {
+			continue
+		}
+		rat := strings.Trim(parts[0], `"`)
+		t, s := parseRAT(rat, parts)
+		tech, signal = chooseBest(tech, signal, t, s)
+	}
+
+	if tech != "" {
+		cache.mu.Lock()
+		cache.tech = tech
+		cache.signal = signal
+		cache.mu.Unlock()
+	}
+}
+
+// fetchGPS queries AT+QGPSLOC=2 and writes the current GPS fix into the cache.
+// +CME ERROR: 516 (no fix yet) is silently ignored; cached values are preserved.
+//
+// Response format: <UTC>,<lat>,<lon>,<hdop>,<alt>,<fix>,<cog>,<spkm>,<spkn>,<date>,<nsat>
+func fetchGPS() {
+	resp := conn.send("AT+QGPSLOC=2")
+	for _, line := range strings.Split(resp, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "+QGPSLOC:") {
+			continue
+		}
+		parts := strings.Split(strings.TrimSpace(strings.TrimPrefix(line, "+QGPSLOC:")), ",")
+		if len(parts) < 11 {
+			continue
+		}
+		cache.mu.Lock()
+		cache.lat = utils.ParseFloat32(parts[1])
+		cache.lon = utils.ParseFloat32(parts[2])
+		cache.hdop = utils.ParseFloat32(parts[3])
+		cache.alt = utils.ParseFloat32(parts[4])
+		cache.spd = utils.ParseFloat32(parts[7])
+		cache.sat = utils.ParseInt(parts[10])
+		cache.mu.Unlock()
+		break
+	}
+}
+
+// ── RAT parsing helpers ───────────────────────────────────────────────────────
+
+// parseRAT extracts the technology label and signal percentage from a +QENG line.
+func parseRAT(rat string, parts []string) (tech string, signal *int) {
+	switch rat {
+	case "NR5G-SA":
+		// "NR5G-SA",MCC,MNC,PCI,RSRP,...  RSRP=parts[4], range -140..-44 dBm
+		return "5G", signalPct(parts, 4, -140, -44)
+	case "NR5G-NSA":
+		// "NR5G-NSA",MCC,MNC,PCI,RSRP,...  RSRP=parts[4], range -140..-44 dBm
+		return "5G-NSA", signalPct(parts, 4, -140, -44)
+	case "LTE":
+		// "LTE",duplex,MCC,MNC,cellID,PCI,EARFCN,band,ul_bw,dl_bw,TAC,RSRP,...
+		// RSRP=parts[11], range -140..-44 dBm
+		return "LTE", signalPct(parts, 11, -140, -44)
+	case "WCDMA":
+		// "WCDMA",MCC,MNC,LAC,cellID,UARFCN,PSC,RAC,RSCP,...
+		// RSCP=parts[8], range -120..-25 dBm
+		return "3G", signalPct(parts, 8, -120, -25)
+	case "GSM":
+		// "GSM",MCC,MNC,LAC,cellID,BSIC,ARFCN,RSSI,...
+		// RSSI=parts[7], range -113..-51 dBm
+		return "2G", signalPct(parts, 7, -113, -51)
+	}
+	return "", nil
+}
+
+// chooseBest returns the higher-priority (tech, signal) pair.
+// Priority order: 5G > 5G-NSA > LTE > 3G > 2G.
+func chooseBest(curTech string, curSignal *int, newTech string, newSignal *int) (string, *int) {
+	rank := map[string]int{"5G": 5, "5G-NSA": 4, "LTE": 3, "3G": 2, "2G": 1}
+	if rank[newTech] > rank[curTech] {
+		return newTech, newSignal
+	}
+	return curTech, curSignal
+}
+
+// signalPct extracts a dBm value at parts[idx] and converts it to a 0–100 percentage.
+// Returns nil when the index is out of range or the value cannot be parsed.
+func signalPct(parts []string, idx, minDBm, maxDBm int) *int {
+	if idx >= len(parts) {
+		return nil
+	}
+	v := utils.ParseInt(parts[idx])
+	if v == nil {
+		return nil
+	}
+	return dbmToPercent(*v, minDBm, maxDBm)
+}
+
+// dbmToPercent linearly maps dbm ∈ [minDBm, maxDBm] to a percentage in [0, 100].
+func dbmToPercent(dbm, minDBm, maxDBm int) *int {
+	pct := (dbm - minDBm) * 100 / (maxDBm - minDBm)
+	if pct < 0 {
+		pct = 0
+	} else if pct > 100 {
+		pct = 100
+	}
+	return &pct
+}
+
+// ── AT serial layer ───────────────────────────────────────────────────────────
+
+// send writes a command and returns the full response (blocking, up to 3 s).
+func (c *atConn) send(cmd string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.port.ResetInputBuffer()
+	c.port.Write([]byte(cmd + "\r\n"))
+	return c.readResponse(3 * time.Second)
+}
+
+// readResponse accumulates serial data until a final AT result code is seen or
+// the timeout elapses.
+func (c *atConn) readResponse(timeout time.Duration) string {
+	c.port.SetReadTimeout(200 * time.Millisecond)
+	var buf strings.Builder
+	deadline := time.Now().Add(timeout)
+	chunk := make([]byte, 512)
+	for time.Now().Before(deadline) {
+		n, _ := c.port.Read(chunk)
+		if n > 0 {
+			buf.Write(chunk[:n])
+			if isResponseComplete(buf.String()) {
+				break
+			}
+		}
+	}
+	return buf.String()
+}
+
+// isResponseComplete returns true when buf ends with a recognized AT result code.
+func isResponseComplete(buf string) bool {
+	last := lastNonEmptyLine(buf)
+	return last == "OK" || last == "ERROR" ||
+		strings.HasPrefix(last, "+CME ERROR") ||
+		strings.HasPrefix(last, "+CMS ERROR")
+}
+
+// lastNonEmptyLine returns the last non-whitespace line in s.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// atPortPath returns the AT serial port path, falling back to /dev/ttyUSB2.
+func atPortPath() string {
+	if p := os.Getenv("MODEM_AT_PORT"); p != "" {
+		return p
+	}
+	return "/dev/ttyUSB2"
+}
+
+// splitCSV splits a comma-separated AT response, honouring double-quoted fields.
+func splitCSV(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	inQuote := false
+	for _, c := range s {
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+			cur.WriteRune(c)
+		case c == ',' && !inQuote:
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteRune(c)
+		}
+	}
+	return append(parts, cur.String())
 }

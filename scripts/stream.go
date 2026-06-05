@@ -1,31 +1,33 @@
 package scripts
 
 import (
+	"fmt"
+
 	"racecast-emitter/utils"
 
 	lksdk "github.com/livekit/server-sdk-go/v2"
 )
 
-// StartWebcamStream creates a GStreamer VP9 pipeline and publishes it to the
-// given LiveKit room.
-//
-// The returned pipeline must be stopped and freed by the caller on shutdown.
-func AddVideoStream(room *lksdk.Room, cfg utils.VideoPipelineConfig, fakeStream bool) *utils.GStreamerPipeline {
+// AddVideoStream creates a GStreamer pipeline for the given camera config and
+// publishes it to the LiveKit room.
+// Returns the running pipeline, the LiveKit publication SID (for unpublishing),
+// and any error. On error the caller does not need to clean up.
+func AddVideoStream(room *lksdk.Room, cfg utils.VideoPipelineConfig, fakeStream bool) (*utils.GStreamerPipeline, string, error) {
 	if fakeStream {
-		utils.Log.Infow("Using SMPTE test pattern.")
+		utils.Log.Infow("Video stream: using SMPTE test pattern.")
 	} else {
-		utils.Log.Infow("Using webcam.", "device", cfg.Device)
+		utils.Log.Infow("Video stream: using webcam.", "device", cfg.Device)
 	}
 
 	pipeline, err := utils.NewVideoPipeline(cfg, fakeStream)
 	if err != nil {
-		utils.Log.Fatalw("Failed to create video pipeline.", "error", err)
+		return nil, "", fmt.Errorf("create video pipeline: %w", err)
 	}
 
-	track, err := utils.PublishVideoTrack(room, cfg.Name)
+	track, pubSID, err := utils.PublishVideoTrack(room, cfg.Name)
 	if err != nil {
 		pipeline.Free()
-		utils.Log.Fatalw("Failed to publish video track.", "error", err)
+		return nil, "", fmt.Errorf("publish video track: %w", err)
 	}
 
 	pipeline.AttachTrack(track)
@@ -38,38 +40,46 @@ func AddVideoStream(room *lksdk.Room, cfg utils.VideoPipelineConfig, fakeStream 
 
 	if err := pipeline.Start(); err != nil {
 		pipeline.Free()
-		utils.Log.Fatalw("Failed to start video pipeline.", "error", err)
+		if unpubErr := room.LocalParticipant.UnpublishTrack(pubSID); unpubErr != nil {
+			utils.Log.Warnw("Failed to unpublish track after pipeline start failure.", "error", unpubErr)
+		}
+		return nil, "", fmt.Errorf("start video pipeline: %w", err)
 	}
 
-	utils.Log.Infow("Video stream started.")
-	return pipeline
+	return pipeline, pubSID, nil
 }
 
-func AddAudioStream(room *lksdk.Room, cfg utils.AudioPipelineConfig, fakeStream bool) *utils.GStreamerPipeline {
+// AddAudioStream creates a GStreamer pipeline for the given microphone config
+// and publishes it to the LiveKit room.
+// Returns the running pipeline, the LiveKit publication SID (for unpublishing),
+// and any error. On error the caller does not need to clean up.
+func AddAudioStream(room *lksdk.Room, cfg utils.AudioPipelineConfig, fakeStream bool) (*utils.GStreamerPipeline, string, error) {
 	if fakeStream {
-		utils.Log.Infow("Using fake audio stream (sine wave).")
+		utils.Log.Infow("Audio stream: using sine-wave test source.")
 	} else {
-		utils.Log.Infow("Using microphone audio stream.")
+		utils.Log.Infow("Audio stream: using ALSA device.", "device", cfg.Device)
 	}
 
 	pipeline, err := utils.NewAudioPipeline(cfg, fakeStream)
 	if err != nil {
-		utils.Log.Fatalw("Failed to create audio pipeline.", "error", err)
+		return nil, "", fmt.Errorf("create audio pipeline: %w", err)
 	}
 
-	track, err := utils.PublishAudioTrack(room, cfg)
+	track, pubSID, err := utils.PublishAudioTrack(room, cfg)
 	if err != nil {
 		pipeline.Free()
-		utils.Log.Fatalw("Failed to publish audio track.", "error", err)
+		return nil, "", fmt.Errorf("publish audio track: %w", err)
 	}
 
 	pipeline.AttachTrack(track)
 
 	if err := pipeline.Start(); err != nil {
 		pipeline.Free()
-		utils.Log.Fatalw("Failed to start audio pipeline.", "error", err)
+		if unpubErr := room.LocalParticipant.UnpublishTrack(pubSID); unpubErr != nil {
+			utils.Log.Warnw("Failed to unpublish track after pipeline start failure.", "error", unpubErr)
+		}
+		return nil, "", fmt.Errorf("start audio pipeline: %w", err)
 	}
 
-	utils.Log.Infow("Audio stream started.")
-	return pipeline
+	return pipeline, pubSID, nil
 }

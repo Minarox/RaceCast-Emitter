@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"os"
 	"strconv"
@@ -21,23 +20,6 @@ var (
 	noMetadata   *bool
 	fakeMetadata *bool
 )
-
-type DevicesConfig struct {
-	Cameras     []utils.VideoPipelineConfig `json:"cameras"`
-	Microphones []utils.AudioPipelineConfig `json:"microphones"`
-}
-
-func loadDevicesConfig(path string) DevicesConfig {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		utils.Log.Fatalw("Failed to read devices config.", "path", path, "error", err)
-	}
-	var cfg DevicesConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		utils.Log.Fatalw("Failed to parse devices config.", "path", path, "error", err)
-	}
-	return cfg
-}
 
 func updateMetadata() {
 	var (
@@ -93,7 +75,7 @@ func roomMetadataUpdater() {
 	}
 
 	for {
-		go updateMetadata()
+		updateMetadata()
 		time.Sleep(time.Second)
 	}
 }
@@ -129,7 +111,7 @@ func main() {
 		noUPS = utils.BoolPtr(true)
 	}
 
-	if (!*noStream || (!*noMetadata && (!*noUPS || !*noModem))) {
+	if !*noStream || (!*noMetadata && (!*noUPS || !*noModem)) {
 		utils.SetupLiveKitRoom()
 	}
 
@@ -140,34 +122,27 @@ func main() {
 	if !*noStream && (!*noCam || !*noMic) {
 		utils.InitGStreamer()
 
-		devices := loadDevicesConfig("devices.json")
-
 		room := utils.ConnectToLiveKitRoom()
 		defer room.Disconnect()
 
-		if !*noCam {
-			for _, cam := range devices.Cameras {
-				if !cam.Enabled {
-					utils.Log.Infow("Camera disabled, skipping.", "name", cam.Name)
-					continue
-				}
-				p := scripts.AddVideoStream(room, cam, *fake || *fakeStream)
-				defer p.Stop()
-				defer p.Free()
-			}
+		// Quality limits read from environment variables.
+		// Defaults: 1080p30, 2 Mbit/s for video; 48 kHz stereo, 96 kbit/s for audio.
+		smOpts := scripts.StreamManagerOptions{
+			MaxVideoWidth:    utils.ParseIntEnv("CAM_MAX_WIDTH", 1920),
+			MaxVideoHeight:   utils.ParseIntEnv("CAM_MAX_HEIGHT", 1080),
+			MaxVideoFPS:      utils.ParseIntEnv("CAM_MAX_FRAMERATE", 30),
+			VideoBitrate:     utils.ParseIntEnv("CAM_BITRATE", 2_000_000),
+			MaxAudioRate:     utils.ParseIntEnv("MIC_MAX_SAMPLE_RATE", 48000),
+			MaxAudioChannels: utils.ParseIntEnv("MIC_MAX_CHANNELS", 2),
+			AudioBitrate:     utils.ParseIntEnv("MIC_BITRATE", 96_000),
+			NoCam:            *noCam,
+			NoMic:            *noMic,
+			Fake:             *fake || *fakeStream,
 		}
 
-		if !*noMic {
-			for _, mic := range devices.Microphones {
-				if !mic.Enabled {
-					utils.Log.Infow("Microphone disabled, skipping.", "name", mic.Name)
-					continue
-				}
-				p := scripts.AddAudioStream(room, mic, *fake || *fakeStream)
-				defer p.Stop()
-				defer p.Free()
-			}
-		}
+		sm := scripts.NewStreamManager(room, smOpts)
+		sm.Start()
+		defer sm.Stop()
 	}
 
 	select {}

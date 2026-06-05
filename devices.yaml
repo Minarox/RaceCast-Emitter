@@ -1,0 +1,10 @@
+cameras:
+  - match: "USB Camera"
+    name: "Test"
+    primary: true
+    vertical_flip: true
+    horizontal_flip: true
+
+microphones:
+  - match: "USB Camera"
+    name: "Route"

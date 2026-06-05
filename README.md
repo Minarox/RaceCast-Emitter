@@ -44,7 +44,7 @@
 
 ### Features
 
-- Collecting position, connectivity and battery state from sensors
+- Collecting position, connectivity and battery state from modem and ups
 - Updating [LiveKit](https://livekit.io/) room metadata with latest sensors data
 - Creating and publishing audio, video and data tracks to [LiveKit](https://livekit.io/) server
 
@@ -56,15 +56,44 @@
 
 ### Hardware
 
-- [Waveshare Jetson TX2 NX Development Kit](https://www.waveshare.com/jetson-tx2-nx-dev-kit.htm?sku=23036)
-- [Waveshare 5G LTE Hat](https://www.waveshare.com/sim8202g-m2-5g-for-jetson-nano.htm?sku=26167)
+- [Waveshare Jetson Orin NX Development Kit](https://www.waveshare.com/jetson-orin-nx-16g-dev-kit.htm?sku=24475)
+- [Waveshare RM520N-GL Hat](https://www.waveshare.com/rm520n-gl-5g-for-jetson-orin.htm)
 - [Waveshare UPS Power Module](https://www.waveshare.com/UPS-Power-Module-C.htm)
-- Various UVC Webcam
+- Various UVC cameras and microphones
 
 ### Configuration
 
 A `.env` file must be created with the information provided in `.env.example`.
 All fields are required.
+
+#### ModemManager
+
+Grant the desired user the necessary permissions to partially control [ModemManager](https://modemmanager.org/).
+This step is required if you want to use the [Go](https://go.dev/) script without running it with `sudo`.
+
+```bash
+sudo nano /etc/polkit-1/localauthority/50-local.d/50-modemmanager.pkla
+```
+
+```bash
+[Allow mmcli]
+Identity=unix-user:username
+Action=org.freedesktop.ModemManager1.Device.Control
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+
+[Allow mmcli location]
+Identity=unix-user:username
+Action=org.freedesktop.ModemManager1.Location
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+```
+
+```bash
+sudo systemctl restart ModemManager
+```
 
 ## Author
 

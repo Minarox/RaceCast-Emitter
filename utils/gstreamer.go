@@ -94,6 +94,8 @@ type GStreamerPipeline struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	running     bool
+	onError     func()     // called on unrecoverable pipeline error (e.g. device disconnect)
+	wg          sync.WaitGroup // tracks running goroutines (loop, watchBus)
 }
 
 // InitGStreamer must be called once before any pipeline is created.
@@ -177,12 +179,9 @@ func NewVideoPipeline(cfg VideoPipelineConfig, fakeStream bool) (*GStreamerPipel
 			return nil, err
 		}
 		Log.Infow("Camera format detected.", "device", cfg.Device, "format", camFmt)
-		switch camFmt {
-		case FormatMJPEG:
-			pipelineStr = buildMJPEGPipeline(cfg)
-		case FormatYUYV:
-			pipelineStr = buildYUYVPipeline(cfg)
-		default:
+		var ok bool
+		pipelineStr, ok = buildVideoPipeline(cfg, camFmt)
+		if !ok {
 			return nil, fmt.Errorf("unsupported camera format: %s", camFmt)
 		}
 	}
@@ -222,7 +221,7 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 		}
 		pipelineStr = fmt.Sprintf(
 			"alsasrc device=%s ! "+
-				"audioconvert ! "+ 
+				"audioconvert ! "+
 				"audioresample ! "+
 				"audio/x-raw,rate=%d,channels=%d ! "+
 				"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
@@ -236,34 +235,31 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 	return newPipeline(pipelineStr)
 }
 
-// buildMJPEGPipeline returns a GStreamer pipeline string for MJPEG cameras.
-func buildMJPEGPipeline(cfg VideoPipelineConfig) string {
+// buildVideoPipeline returns a GStreamer pipeline string for the given camera
+// format. The format-specific part is the source caps and decode/convert chain;
+// the NVMM encoder tail is shared. Returns (pipeline, false) for unknown formats.
+func buildVideoPipeline(cfg VideoPipelineConfig, format CameraFormat) (string, bool) {
+	var srcCaps, decoder string
+	switch format {
+	case FormatMJPEG:
+		srcCaps = fmt.Sprintf("image/jpeg,width=%d,height=%d,framerate=%d/1", cfg.Width, cfg.Height, cfg.Framerate)
+		decoder = "nvv4l2decoder mjpeg=1"
+	case FormatYUYV:
+		srcCaps = fmt.Sprintf("video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1", cfg.Width, cfg.Height, cfg.Framerate)
+		decoder = "videoconvert ! video/x-raw,format=I420"
+	default:
+		return "", false
+	}
 	return fmt.Sprintf(
 		"v4l2src device=%s ! "+
-			"image/jpeg,width=%d,height=%d,framerate=%d/1 ! "+
-			"nvv4l2decoder mjpeg=1 ! "+
+			"%s ! "+
+			"%s ! "+
 			"nvvidconv ! "+
 			"video/x-raw(memory:NVMM),format=NV12 ! "+
 			"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
-		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
-	)
-}
-
-// buildYUYVPipeline returns a GStreamer pipeline string for YUYV cameras.
-// YUYV (YUY2) is converted to I420 via videoconvert before the NVMM encoder.
-func buildYUYVPipeline(cfg VideoPipelineConfig) string {
-	return fmt.Sprintf(
-		"v4l2src device=%s ! "+
-			"video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1 ! "+
-			"videoconvert ! "+
-			"video/x-raw,format=I420 ! "+
-			"nvvidconv ! "+
-			"video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
-			"appsink name=sink max-buffers=2 drop=true sync=false",
-		cfg.Device, cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
-	)
+		cfg.Device, srcCaps, decoder, cfg.Bitrate,
+	), true
 }
 
 // checkVideoDevice verifies that the V4L2 device node exists and is readable.
@@ -371,9 +367,25 @@ func (p *GStreamerPipeline) Start() error {
 	}
 
 	p.running = true
-	go p.loop()
-	go p.watchBus()
+	p.wg.Add(2)
+	go func() { defer p.wg.Done(); p.loop() }()
+	go func() { defer p.wg.Done(); p.watchBus() }()
 	return nil
+}
+
+// SetErrorCallback registers a function called when the pipeline encounters an
+// unrecoverable error (e.g. a device is physically disconnected). It is invoked
+// in a separate goroutine so it is safe to call Stop/Free from within it.
+func (p *GStreamerPipeline) SetErrorCallback(fn func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onError = fn
+}
+
+// Wait blocks until all internal goroutines (loop, watchBus) have exited.
+// Always call this between Stop() and Free() to avoid use-after-free races.
+func (p *GStreamerPipeline) Wait() {
+	p.wg.Wait()
 }
 
 // Stop tears down the pipeline gracefully.
@@ -432,6 +444,13 @@ func (p *GStreamerPipeline) watchBus() {
 		switch ret {
 		case 1:
 			Log.Errorw("GStreamer pipeline error.", "message", msg, "debug", dbg)
+			p.mu.Lock()
+			cb := p.onError
+			p.mu.Unlock()
+			if cb != nil {
+				go cb()
+			}
+			return
 		case 2:
 			Log.Warnw("GStreamer pipeline warning.", "message", msg, "debug", dbg)
 		case 3:
@@ -444,7 +463,7 @@ func (p *GStreamerPipeline) watchBus() {
 // loop pulls encoded frames from appsink and writes them to the LiveKit track.
 // Uses a 1-second timeout on each pull to detect and log stalls.
 func (p *GStreamerPipeline) loop() {
-	var writeWarned  bool
+	var writeWarned bool
 
 	for {
 		select {
@@ -504,45 +523,47 @@ func (p *GStreamerPipeline) loop() {
 }
 
 // PublishVideoTrack creates and publishes a video LocalSampleTrack to the LiveKit room.
-func PublishVideoTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTrack, error) {
+// It returns the track, the publication SID (needed to unpublish later), and any error.
+func PublishVideoTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTrack, string, error) {
 	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
 		MimeType:  webrtc.MimeTypeAV1,
 		ClockRate: 90000,
 		Channels:  0,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create video sample track: %w", err)
+		return nil, "", fmt.Errorf("failed to create video sample track: %w", err)
 	}
 
-	_, err = room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+	pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
 		Name:   trackName,
 		Source: livekit.TrackSource_CAMERA,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to publish video track: %w", err)
+		return nil, "", fmt.Errorf("failed to publish video track: %w", err)
 	}
 
-	return track, nil
+	return track, pub.SID(), nil
 }
 
 // PublishAudioTrack creates and publishes an audio LocalSampleTrack to the LiveKit room.
-func PublishAudioTrack(room *lksdk.Room, cfg AudioPipelineConfig) (*lksdk.LocalSampleTrack, error) {
+// It returns the track, the publication SID (needed to unpublish later), and any error.
+func PublishAudioTrack(room *lksdk.Room, cfg AudioPipelineConfig) (*lksdk.LocalSampleTrack, string, error) {
 	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
 		MimeType:  webrtc.MimeTypeOpus,
 		ClockRate: 48000,
 		Channels:  2,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create audio sample track: %w", err)
+		return nil, "", fmt.Errorf("failed to create audio sample track: %w", err)
 	}
 
-	_, err = room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+	pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
 		Name:   cfg.Name,
 		Source: livekit.TrackSource_MICROPHONE,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to publish audio track: %w", err)
+		return nil, "", fmt.Errorf("failed to publish audio track: %w", err)
 	}
 
-	return track, nil
+	return track, pub.SID(), nil
 }

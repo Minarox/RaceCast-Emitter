@@ -9,8 +9,39 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/livekit"
+	protoLogger "github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 )
+
+// newPionLogger builds a LiveKit/Pion logger wired to our existing Zap logger
+// and capped at the level defined by the LOG_LEVEL environment variable so that
+// Pion's ICE/DTLS/RTP traces respect the same verbosity as the application.
+func newPionLogger() protoLogger.Logger {
+	// Map our LOG_LEVEL values to the subset understood by protoLogger.Config.
+	// "verbose" has no Pion equivalent, so it maps to "info".
+	levelMap := map[string]string{
+		"debug":   "debug",
+		"verbose": "info",
+		"info":    "info",
+		"warn":    "warn",
+		"error":   "error",
+	}
+	level, ok := levelMap[os.Getenv("LOG_LEVEL")]
+	if !ok {
+		level = "warn"
+	}
+
+	l, err := protoLogger.FromZapLogger(
+		Log.Desugar(),
+		&protoLogger.Config{Level: level},
+	)
+	if err != nil {
+		// Should never happen with a valid config; fall through to default.
+		Log.Warnw("Failed to create Pion logger; Pion logs will be unfiltered.", "error", err)
+		return protoLogger.GetLogger()
+	}
+	return l
+}
 
 var (
 	roomService *lksdk.RoomServiceClient
@@ -44,7 +75,7 @@ func createRoomService() *lksdk.RoomServiceClient {
 }
 
 func SetupLiveKitRoom() {
-	if (roomCreated) {
+	if roomCreated {
 		return
 	}
 
@@ -54,7 +85,7 @@ func SetupLiveKitRoom() {
 
 	createRoomService()
 
-	rooms , err := roomService.ListRooms(
+	rooms, err := roomService.ListRooms(
 		context.Background(),
 		&livekit.ListRoomsRequest{},
 	)
@@ -103,13 +134,16 @@ func UpdateLiveKitRoomMetadata(metadata map[string]any) {
 		Log.Debugw("Updating room metadata.", "payload", string(payloadJSON))
 
 		// Update room metadata
-		roomService.UpdateRoomMetadata(
+		_, err := roomService.UpdateRoomMetadata(
 			context.Background(),
 			&livekit.UpdateRoomMetadataRequest{
 				Room:     os.Getenv("LIVEKIT_ROOM"),
 				Metadata: string(payloadJSON),
 			},
 		)
+		if err != nil {
+			Log.Warnw("Failed to update room metadata.", "error", err)
+		}
 	}
 }
 
@@ -122,10 +156,10 @@ func ConnectToLiveKitRoom() *lksdk.Room {
 		RoomName:            os.Getenv("LIVEKIT_ROOM"),
 		ParticipantIdentity: os.Getenv("LIVEKIT_IDENTITY"),
 		ParticipantName:     os.Getenv("LIVEKIT_IDENTITY"),
-	}, &lksdk.RoomCallback{})
+	}, &lksdk.RoomCallback{}, lksdk.WithLogger(newPionLogger()))
 
 	if err != nil {
-		Log.Errorf("Failed to connect to LiveKit room: %v", err)
+		Log.Errorw("Failed to connect to LiveKit room.", "error", err)
 	}
 
 	Log.Infow("Connected to LiveKit room.", "room", os.Getenv("LIVEKIT_ROOM"))
