@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	protoLogger "github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/pion/webrtc/v4"
 )
 
 // newPionLogger builds a LiveKit/Pion logger wired to our existing Zap logger
@@ -164,4 +166,67 @@ func ConnectToLiveKitRoom() *lksdk.Room {
 
 	Log.Infow("Connected to LiveKit room.", "room", os.Getenv("LIVEKIT_ROOM"))
 	return room
+}
+
+// TryConnectToLiveKitRoom attempts to connect to the LiveKit room using the
+// provided callback.  Unlike ConnectToLiveKitRoom it returns an error instead
+// of logging a fatal, so callers can retry on failure.
+func TryConnectToLiveKitRoom(cb *lksdk.RoomCallback) (*lksdk.Room, error) {
+	SetupLiveKitRoom()
+	if cb == nil {
+		cb = &lksdk.RoomCallback{}
+	}
+	room, err := lksdk.ConnectToRoom(getUrl(), lksdk.ConnectInfo{
+		APIKey:              os.Getenv("LIVEKIT_API_KEY"),
+		APISecret:           os.Getenv("LIVEKIT_API_SECRET"),
+		RoomName:            os.Getenv("LIVEKIT_ROOM"),
+		ParticipantIdentity: os.Getenv("LIVEKIT_IDENTITY"),
+		ParticipantName:     os.Getenv("LIVEKIT_IDENTITY"),
+	}, cb, lksdk.WithLogger(newPionLogger()))
+	if err != nil {
+		return nil, err
+	}
+	Log.Infow("Connected to LiveKit room.", "room", os.Getenv("LIVEKIT_ROOM"))
+	return room, nil
+}
+
+// PublishVideoTrack creates and publishes a video LocalSampleTrack to the room.
+// Returns the track, publication SID (needed to unpublish later), and any error.
+func PublishVideoTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTrack, string, error) {
+	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
+		MimeType:  webrtc.MimeTypeAV1,
+		ClockRate: 90000,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create video sample track: %w", err)
+	}
+	pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+		Name:   trackName,
+		Source: livekit.TrackSource_CAMERA,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to publish video track: %w", err)
+	}
+	return track, pub.SID(), nil
+}
+
+// PublishAudioTrack creates and publishes an audio LocalSampleTrack to the room.
+// Returns the track, publication SID (needed to unpublish later), and any error.
+func PublishAudioTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTrack, string, error) {
+	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
+		MimeType:  webrtc.MimeTypeOpus,
+		ClockRate: 48000,
+		Channels:  2,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create audio sample track: %w", err)
+	}
+	pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+		Name:   trackName,
+		Source: livekit.TrackSource_MICROPHONE,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to publish audio track: %w", err)
+	}
+	return track, pub.SID(), nil
 }

@@ -77,24 +77,25 @@ import (
 	"sync"
 	"time"
 	"unsafe"
-
-	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 )
 
-// GStreamerPipeline wraps a GStreamer pipeline and exposes RTP samples for a LiveKit track.
+// Frame holds a single encoded media buffer produced by a GStreamer pipeline.
+type Frame struct {
+	Data     []byte
+	Duration time.Duration
+}
+
+// GStreamerPipeline wraps a GStreamer pipeline and exposes encoded frames via a channel.
 type GStreamerPipeline struct {
 	mu          sync.Mutex
 	pipeline    *C.GstElement
 	appsink     *C.GstElement
-	track       *lksdk.LocalSampleTrack
+	frames      chan Frame     // encoded frames; closed when the pipeline stops
 	pipelineStr string
 	ctx         context.Context
 	cancel      context.CancelFunc
 	running     bool
-	onError     func()     // called on unrecoverable pipeline error (e.g. device disconnect)
+	onError     func()        // called on unrecoverable pipeline error (e.g. device disconnect)
 	wg          sync.WaitGroup // tracks running goroutines (loop, watchBus)
 }
 
@@ -338,10 +339,17 @@ func newPipeline(pipelineStr string) (*GStreamerPipeline, error) {
 	return &GStreamerPipeline{
 		pipeline:    pipeline,
 		appsink:     appsink,
+		frames:      make(chan Frame, 8),
 		pipelineStr: pipelineStr,
 		ctx:         ctx,
 		cancel:      cancel,
 	}, nil
+}
+
+// Frames returns the read-only channel of encoded frames produced by this pipeline.
+// The channel is closed when the pipeline stops.
+func (p *GStreamerPipeline) Frames() <-chan Frame {
+	return p.frames
 }
 
 // ForceKeyframe sends an upstream GstForceKeyUnit event to the encoder,
@@ -359,12 +367,7 @@ func (p *GStreamerPipeline) ForceKeyframe() {
 	C.gst_force_key_unit_go(appsink)
 }
 
-// AttachTrack associates a LiveKit LocalSampleTrack with the pipeline.
-func (p *GStreamerPipeline) AttachTrack(track *lksdk.LocalSampleTrack) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.track = track
-}
+// AttachTrack is intentionally removed. Consumers read from Frames() instead.
 
 // Start sets the pipeline to PLAYING and begins pumping RTP buffers to the track.
 func (p *GStreamerPipeline) Start() error {
@@ -474,10 +477,11 @@ func (p *GStreamerPipeline) watchBus() {
 	}
 }
 
-// loop pulls encoded frames from appsink and writes them to the LiveKit track.
-// Uses a 1-second timeout on each pull to detect and log stalls.
+// loop pulls encoded frames from appsink and sends them to the frames channel.
+// Frames are dropped (non-blocking send) when no consumer is reading fast enough.
+// The channel is closed when the loop exits.
 func (p *GStreamerPipeline) loop() {
-	var writeWarned bool
+	defer close(p.frames)
 
 	for {
 		select {
@@ -494,6 +498,11 @@ func (p *GStreamerPipeline) loop() {
 			return
 		}
 
+		if flowRet == C.GST_FLOW_CUSTOM_ERROR {
+			// timeout — no frame yet, loop again
+			continue
+		}
+
 		buf := C.gst_sample_get_buffer(sample)
 		if buf == nil {
 			C.gst_sample_unref(sample)
@@ -508,7 +517,6 @@ func (p *GStreamerPipeline) loop() {
 
 		data := C.GoBytes(unsafe.Pointer(mapInfo.data), C.int(mapInfo.size))
 
-		// Read duration before unmapping/unreffing.
 		dur := time.Duration(C.gst_buffer_get_duration_go(buf))
 		if dur <= 0 {
 			dur = time.Second / 30
@@ -517,67 +525,14 @@ func (p *GStreamerPipeline) loop() {
 		C.gst_buffer_unmap(buf, &mapInfo)
 		C.gst_sample_unref(sample)
 
-		p.mu.Lock()
-		track := p.track
-		p.mu.Unlock()
-
-		if track == nil || len(data) == 0 {
+		if len(data) == 0 {
 			continue
 		}
 
-		// Write the raw codec bitstream as a media sample; LiveKit/pion handles
-		// RTP packetisation (SSRC, PT, sequence numbers) internally.
-		if err := track.WriteSample(media.Sample{Data: data, Duration: dur}, nil); err != nil {
-			if !writeWarned {
-				Log.Warnw("GStreamer: failed to write sample to LiveKit track (further errors suppressed).", "error", err)
-				writeWarned = true
-			}
+		// Non-blocking send: drop frame if no consumer or consumer is slow.
+		select {
+		case p.frames <- Frame{Data: data, Duration: dur}:
+		default:
 		}
 	}
-}
-
-// PublishVideoTrack creates and publishes a video LocalSampleTrack to the LiveKit room.
-// It returns the track, the publication SID (needed to unpublish later), and any error.
-func PublishVideoTrack(room *lksdk.Room, trackName string) (*lksdk.LocalSampleTrack, string, error) {
-	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
-		MimeType:  webrtc.MimeTypeAV1,
-		ClockRate: 90000,
-		Channels:  0,
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to create video sample track: %w", err)
-	}
-
-	pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-		Name:   trackName,
-		Source: livekit.TrackSource_CAMERA,
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to publish video track: %w", err)
-	}
-
-	return track, pub.SID(), nil
-}
-
-// PublishAudioTrack creates and publishes an audio LocalSampleTrack to the LiveKit room.
-// It returns the track, the publication SID (needed to unpublish later), and any error.
-func PublishAudioTrack(room *lksdk.Room, cfg AudioPipelineConfig) (*lksdk.LocalSampleTrack, string, error) {
-	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
-		MimeType:  webrtc.MimeTypeOpus,
-		ClockRate: 48000,
-		Channels:  2,
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to create audio sample track: %w", err)
-	}
-
-	pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-		Name:   cfg.Name,
-		Source: livekit.TrackSource_MICROPHONE,
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to publish audio track: %w", err)
-	}
-
-	return track, pub.SID(), nil
 }
