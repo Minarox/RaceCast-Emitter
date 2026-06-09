@@ -33,11 +33,9 @@ type StreamInfo struct {
 
 // CaptureOptions configures the CaptureManager at creation time.
 type CaptureOptions struct {
-	VideoBitrate int // bits/s
-	AudioBitrate int // bits/s
-	NoCam        bool
-	NoMic        bool
-	Fake         bool
+	NoCam bool
+	NoMic bool
+	Fake  bool
 }
 
 // CaptureManager starts and monitors GStreamer pipelines for cameras and
@@ -393,20 +391,44 @@ func (cm *CaptureManager) buildVideoCapture(device string, entry utils.CameraEnt
 	if entry.Name != "" {
 		name = entry.Name
 	}
+
+	// Stream-specific overrides fall back to capture values when zero.
+	streamWidth := entry.Stream.Width
+	if streamWidth == 0 {
+		streamWidth = entry.Width
+	}
+	streamHeight := entry.Stream.Height
+	if streamHeight == 0 {
+		streamHeight = entry.Height
+	}
+	streamFPS := entry.Stream.Framerate
+	if streamFPS == 0 {
+		streamFPS = entry.Framerate
+	}
+	bitrate := entry.Stream.Bitrate
+	if bitrate <= 0 {
+		utils.Log.Errorw("Video stream skipped: 'stream.bitrate' is not set in devices.yaml.", "uid", entry.UID)
+		return nil, StreamInfo{}, fmt.Errorf("stream.bitrate not configured for camera uid=%s", entry.UID)
+	}
+
 	cfg := utils.VideoPipelineConfig{
-		Name:           name,
-		Device:         device,
-		Width:          entry.Width,
-		Height:         entry.Height,
-		Framerate:      entry.Framerate,
-		Bitrate:        cm.opts.VideoBitrate,
-		VerticalFlip:   entry.VerticalFlip,
-		HorizontalFlip: entry.HorizontalFlip,
+		Name:             name,
+		Device:           device,
+		CaptureWidth:     entry.Width,
+		CaptureHeight:    entry.Height,
+		CaptureFramerate: entry.Framerate,
+		Width:            streamWidth,
+		Height:           streamHeight,
+		Framerate:        streamFPS,
+		Bitrate:          bitrate,
+		VerticalFlip:     entry.VerticalFlip,
+		HorizontalFlip:   entry.HorizontalFlip,
 	}
 	utils.Log.Infow("Starting video capture.",
 		"device", device, "name", name, "uid", utils.VideoDeviceUID(device),
-		"width", entry.Width, "height", entry.Height, "fps", entry.Framerate,
-		"v_flip", entry.VerticalFlip, "h_flip", entry.HorizontalFlip)
+		"capture", fmt.Sprintf("%dx%d@%dfps", entry.Width, entry.Height, entry.Framerate),
+		"stream", fmt.Sprintf("%dx%d@%dfps", streamWidth, streamHeight, streamFPS),
+		"bitrate", bitrate, "v_flip", entry.VerticalFlip, "h_flip", entry.HorizontalFlip)
 
 	pipeline, err := utils.NewVideoPipeline(cfg, false)
 	if err != nil {
@@ -513,15 +535,20 @@ func (cm *CaptureManager) buildAudioCapture(device, alsaName string, entry utils
 		name = entry.Name
 	}
 
+	bitrate := entry.Stream.Bitrate
+	if bitrate <= 0 {
+		utils.Log.Errorw("Audio stream skipped: 'stream.bitrate' is not set in devices.yaml.", "uid", entry.UID)
+		return nil, StreamInfo{}, fmt.Errorf("stream.bitrate not configured for microphone uid=%s", entry.UID)
+	}
 	cfg := utils.AudioPipelineConfig{
 		Name:       name,
 		Device:     device,
 		SampleRate: rate,
 		Channels:   channels,
-		Bitrate:    cm.opts.AudioBitrate,
+		Bitrate:    bitrate,
 	}
 	utils.Log.Infow("Starting audio capture.",
-		"device", device, "name", name, "rate", rate, "channels", channels)
+		"device", device, "name", name, "rate", rate, "channels", channels, "bitrate", bitrate)
 
 	pipeline, err := utils.NewAudioPipeline(cfg, false)
 	if err != nil {
@@ -571,7 +598,7 @@ func (cm *CaptureManager) startFakeVideo() {
 		Width:     1920,
 		Height:    1080,
 		Framerate: 30,
-		Bitrate:   cm.opts.VideoBitrate,
+		Bitrate:   2_000_000,
 	}
 	pipeline, err := utils.NewVideoPipeline(cfg, true)
 	if err != nil {
@@ -603,7 +630,7 @@ func (cm *CaptureManager) startFakeAudio() {
 		Name:       "Fake Microphone",
 		SampleRate: 48000,
 		Channels:   2,
-		Bitrate:    cm.opts.AudioBitrate,
+		Bitrate:    96_000,
 	}
 	pipeline, err := utils.NewAudioPipeline(cfg, true)
 	if err != nil {

@@ -1,13 +1,10 @@
 package scripts
 
 // StreamManagerOptions configures the StreamManager.
-// Kept for backward compatibility with main.go.
 type StreamManagerOptions struct {
-	VideoBitrate int // bits/s
-	AudioBitrate int // bits/s
-	NoCam        bool
-	NoMic        bool
-	Fake         bool
+	NoCam bool
+	NoMic bool
+	Fake  bool
 }
 
 // StreamManager wires a CaptureManager (GStreamer, no LiveKit dependency) to a
@@ -24,11 +21,9 @@ type StreamManager struct {
 // NewStreamManager creates and wires a CaptureManager and a PublishManager.
 func NewStreamManager(opts StreamManagerOptions) *StreamManager {
 	cm := NewCaptureManager(CaptureOptions{
-		VideoBitrate: opts.VideoBitrate,
-		AudioBitrate: opts.AudioBitrate,
-		NoCam:        opts.NoCam,
-		NoMic:        opts.NoMic,
-		Fake:         opts.Fake,
+		NoCam: opts.NoCam,
+		NoMic: opts.NoMic,
+		Fake:  opts.Fake,
 	})
 	pm := NewPublishManager()
 	cm.OnStreamAdded(pm.Publish)

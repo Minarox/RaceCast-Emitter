@@ -122,14 +122,10 @@ func main() {
 	if !*noStream && (!*noCam || !*noMic) {
 		utils.InitGStreamer()
 
-		// Quality limits read from environment variables.
-		// Defaults: 2 Mbit/s for video; 96 kbit/s for audio.
 		smOpts := scripts.StreamManagerOptions{
-			VideoBitrate: utils.ParseIntEnv("CAM_BITRATE", 2_000_000),
-			AudioBitrate: utils.ParseIntEnv("MIC_BITRATE", 96_000),
-			NoCam:        *noCam,
-			NoMic:        *noMic,
-			Fake:         *fake || *fakeStream,
+			NoCam: *noCam,
+			NoMic: *noMic,
+			Fake:  *fake || *fakeStream,
 		}
 
 		sm := scripts.NewStreamManager(smOpts)

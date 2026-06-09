@@ -8,6 +8,8 @@ cameras:
     framerate: 30
     vertical_flip: true
     horizontal_flip: true
+    stream:
+      bitrate: 2000000
 
   - uid: "HD_USB_Camera_HD_USB_Camera"
     name: "Habitacle"
@@ -16,6 +18,10 @@ cameras:
     framerate: 30
     vertical_flip: true
     horizontal_flip: true
+    stream:
+      width: 852
+      height: 480
+      bitrate: 400000
 
 
 microphones:
@@ -23,3 +29,5 @@ microphones:
     name: "Habitacle"
     sample_rate: 48000
     channels: 2
+    stream:
+      bitrate: 24000

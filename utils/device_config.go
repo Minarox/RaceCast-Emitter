@@ -6,6 +6,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// CameraStreamCfg holds streaming-specific settings for a camera.
+// Each field overrides the corresponding capture-level value when non-zero.
+// This allows streaming at a different resolution, framerate or bitrate than
+// the recording pipeline without changing the capture parameters.
+type CameraStreamCfg struct {
+	// Width overrides the capture width for the stream encoder.
+	Width int `yaml:"width"`
+
+	// Height overrides the capture height for the stream encoder.
+	Height int `yaml:"height"`
+
+	// Framerate overrides the capture framerate for the stream encoder.
+	Framerate int `yaml:"framerate"`
+
+	// Bitrate sets the video encoding bitrate in bits/s (e.g. 2000000 for 2 Mbit/s).
+	// Required: the stream will not start if this value is absent or zero.
+	Bitrate int `yaml:"bitrate"`
+}
+
 // CameraEntry represents a single camera declaration in devices.yaml.
 type CameraEntry struct {
 	// UID is the udev ID_SERIAL of the USB device (e.g.
@@ -17,8 +36,7 @@ type CameraEntry struct {
 	// V4L2 card name is used.
 	Name string `yaml:"name"`
 
-	// Width, Height and Framerate set a per-camera capture resolution limit.
-	// When zero the global limits from environment variables are used.
+	// Width, Height and Framerate define the capture (and recording) resolution.
 	Width     int `yaml:"width"`
 	Height    int `yaml:"height"`
 	Framerate int `yaml:"framerate"`
@@ -32,6 +50,17 @@ type CameraEntry struct {
 	// Disabled prevents this camera from being started.
 	// When absent or false the camera is enabled by default.
 	Disabled bool `yaml:"disabled"`
+
+	// Stream holds streaming-specific overrides (resolution, fps, bitrate).
+	// Each field falls back to the capture-level value when zero.
+	Stream CameraStreamCfg `yaml:"stream"`
+}
+
+// MicrophoneStreamCfg holds streaming-specific settings for a microphone.
+type MicrophoneStreamCfg struct {
+	// Bitrate sets the Opus encoding bitrate in bits/s (e.g. 96000 for 96 kbit/s).
+	// Required: the stream will not start if this value is absent or zero.
+	Bitrate int `yaml:"bitrate"`
 }
 
 // MicrophoneEntry represents a single microphone declaration in devices.yaml.
@@ -54,6 +83,9 @@ type MicrophoneEntry struct {
 	// Disabled prevents this microphone from being started.
 	// When absent or false the microphone is enabled by default.
 	Disabled bool `yaml:"disabled"`
+
+	// Stream holds streaming-specific overrides (bitrate).
+	Stream MicrophoneStreamCfg `yaml:"stream"`
 }
 
 // DevicesConfig is the top-level structure of devices.yaml.

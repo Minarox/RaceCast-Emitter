@@ -131,15 +131,26 @@ func DetectCameraFormat(device string) (CameraFormat, error) {
 
 // VideoPipelineConfig holds the configuration for a video capture pipeline.
 type VideoPipelineConfig struct {
-	Name           string `json:"name"`
-	Device         string `json:"device"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
-	Framerate      int    `json:"framerate"`
-	Bitrate        int    `json:"bitrate"`
-	Enabled        bool   `json:"enabled"`
-	VerticalFlip   bool   `json:"vertical_flip"`
-	HorizontalFlip bool   `json:"horizontal_flip"`
+	Name    string `json:"name"`
+	Device  string `json:"device"`
+
+	// CaptureWidth/CaptureHeight/CaptureFramerate define what the V4L2 device
+	// captures (the srcCaps negotiated with the hardware). When zero they fall
+	// back to Width/Height/Framerate.
+	CaptureWidth     int `json:"capture_width"`
+	CaptureHeight    int `json:"capture_height"`
+	CaptureFramerate int `json:"capture_framerate"`
+
+	// Width/Height/Framerate define the encoder output resolution.
+	// nvvidconv scales between capture and stream resolutions.
+	Width     int `json:"width"`
+	Height    int `json:"height"`
+	Framerate int `json:"framerate"`
+
+	Bitrate        int  `json:"bitrate"`
+	Enabled        bool `json:"enabled"`
+	VerticalFlip   bool `json:"vertical_flip"`
+	HorizontalFlip bool `json:"horizontal_flip"`
 }
 
 // AudioPipelineConfig holds the configuration for an audio capture pipeline.
@@ -254,26 +265,35 @@ func buildVideoPipeline(cfg VideoPipelineConfig, format CameraFormat) (string, b
 		flipMethod = 6
 	}
 
+	// Capture (V4L2) resolution — what the hardware delivers.
+	captureW := cfg.CaptureWidth;     if captureW == 0 { captureW = cfg.Width }
+	captureH := cfg.CaptureHeight;    if captureH == 0 { captureH = cfg.Height }
+	captureF := cfg.CaptureFramerate; if captureF == 0 { captureF = cfg.Framerate }
+
 	var srcCaps, decoder string
 	switch format {
 	case FormatMJPEG:
-		srcCaps = fmt.Sprintf("image/jpeg,width=%d,height=%d,framerate=%d/1", cfg.Width, cfg.Height, cfg.Framerate)
+		srcCaps = fmt.Sprintf("image/jpeg,width=%d,height=%d,framerate=%d/1", captureW, captureH, captureF)
 		decoder = "nvv4l2decoder mjpeg=1"
 	case FormatYUYV:
-		srcCaps = fmt.Sprintf("video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1", cfg.Width, cfg.Height, cfg.Framerate)
+		srcCaps = fmt.Sprintf("video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1", captureW, captureH, captureF)
 		decoder = "videoconvert ! video/x-raw,format=I420"
 	default:
 		return "", false
 	}
+
+	// nvvidconv handles both flip and scaling (capture → stream resolution).
+	nvmmCaps := fmt.Sprintf("video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d", cfg.Width, cfg.Height)
+
 	return fmt.Sprintf(
 		"v4l2src device=%s ! "+
 			"%s ! "+
 			"%s ! "+
 			"nvvidconv flip-method=%d ! "+
-			"video/x-raw(memory:NVMM),format=NV12 ! "+
+			"%s ! "+
 			"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
-		cfg.Device, srcCaps, decoder, flipMethod, cfg.Bitrate,
+		cfg.Device, srcCaps, decoder, flipMethod, nvmmCaps, cfg.Bitrate,
 	), true
 }
 
