@@ -13,115 +13,12 @@ import (
 	"time"
 )
 
-// defaultAudioExcludePatterns is a built-in list of card-name substrings that
-// identify known internal or virtual ALSA devices that are never real capture
-// sources. Matching is case-insensitive.
-//
-// "NVIDIA Jetson" covers the Tegra APE Audio Processing Engine which exposes
-// up to 20 virtual XBAR-ADMAIF nodes but carries no actual microphone signal.
-var defaultAudioExcludePatterns = []string{
-	"NVIDIA Jetson",
-}
-
-// audioExcludePatterns returns the merged list of built-in and user-configured
-// exclusion patterns. The env var MIC_EXCLUDE accepts a comma-separated list of
-// additional case-insensitive substrings to exclude by card name.
-//
-// Example:  MIC_EXCLUDE="HDMI,HDA Intel"
-func audioExcludePatterns() []string {
-	patterns := make([]string, len(defaultAudioExcludePatterns))
-	copy(patterns, defaultAudioExcludePatterns)
-
-	if env := os.Getenv("MIC_EXCLUDE"); env != "" {
-		for _, p := range strings.Split(env, ",") {
-			if t := strings.TrimSpace(p); t != "" {
-				patterns = append(patterns, t)
-			}
-		}
-	}
-	return patterns
-}
-
-// isExcludedAudioDevice returns true when the card name matches any exclusion
-// pattern (case-insensitive substring).
-func isExcludedAudioDevice(cardName string, patterns []string) bool {
-	lower := strings.ToLower(cardName)
-	for _, p := range patterns {
-		if strings.Contains(lower, strings.ToLower(p)) {
-			return true
-		}
-	}
-	return false
-}
-
-// videoExcludePatterns returns the list of user-configured exclusion patterns
-// for video devices. The env var CAM_EXCLUDE accepts a comma-separated list of
-// case-insensitive substrings matched against the V4L2 card name.
-//
-// Example:  CAM_EXCLUDE="bcm2835,Dummy"
-func videoExcludePatterns() []string {
-	var patterns []string
-	if env := os.Getenv("CAM_EXCLUDE"); env != "" {
-		for _, p := range strings.Split(env, ",") {
-			if t := strings.TrimSpace(p); t != "" {
-				patterns = append(patterns, t)
-			}
-		}
-	}
-	return patterns
-}
-
-// isExcludedVideoDevice returns true when the card name matches any exclusion
-// pattern (case-insensitive substring).
-func isExcludedVideoDevice(cardName string, patterns []string) bool {
-	lower := strings.ToLower(cardName)
-	for _, p := range patterns {
-		if strings.Contains(lower, strings.ToLower(p)) {
-			return true
-		}
-	}
-	return false
-}
-
-// VideoDeviceMode represents a supported resolution+framerate combination for a V4L2 device.
-type VideoDeviceMode struct {
-	Width     int
-	Height    int
-	Framerate int
-	Format    CameraFormat
-}
-
 // AudioDeviceInfo represents a discovered ALSA capture device.
 type AudioDeviceInfo struct {
 	CardNum int
 	DevNum  int
 	Name    string
 	Device  string // e.g. "hw:2,0"
-}
-
-// ListVideoDevices returns the /dev/videoN paths that are valid V4L2 capture
-// devices (i.e. they respond to --list-formats with at least one format entry).
-// Metadata-only nodes, non-video entries, and devices whose card name matches
-// the CAM_EXCLUDE patterns are skipped automatically.
-func ListVideoDevices() []string {
-	matches, _ := filepath.Glob("/dev/video*")
-	exclude := videoExcludePatterns()
-	var result []string
-	for _, m := range matches {
-		out, err := exec.Command("v4l2-ctl", "--device="+m, "--list-formats").Output()
-		if err != nil || !strings.Contains(string(out), "[") {
-			continue
-		}
-		if len(exclude) > 0 {
-			name := GetVideoDeviceName(m)
-			if isExcludedVideoDevice(name, exclude) {
-				Log.Infow("Video device excluded by filter.", "device", m, "name", name)
-				continue
-			}
-		}
-		result = append(result, m)
-	}
-	return result
 }
 
 var cardTypeRe = regexp.MustCompile(`(?i)Card type\s*:\s*(.+)`)
@@ -138,108 +35,13 @@ func GetVideoDeviceName(device string) string {
 	return filepath.Base(device)
 }
 
-// ListVideoModes returns all MJPEG and YUYV modes supported by a V4L2 device.
-func ListVideoModes(device string) ([]VideoDeviceMode, error) {
-	out, err := exec.Command("v4l2-ctl", "--device="+device, "--list-formats-ext").Output()
-	if err != nil {
-		return nil, fmt.Errorf("v4l2-ctl failed for %s: %w", device, err)
-	}
-	return parseVideoModes(string(out)), nil
-}
-
-var (
-	vidFormatRe = regexp.MustCompile(`'(MJPG|YUYV)'`)
-	vidSizeRe   = regexp.MustCompile(`Size:\s+Discrete\s+(\d+)x(\d+)`)
-	vidFPSRe    = regexp.MustCompile(`\((\d+(?:\.\d+)?)\s+fps\)`)
-)
-
-func parseVideoModes(output string) []VideoDeviceMode {
-	var modes []VideoDeviceMode
-	var currentFormat CameraFormat
-	var currentW, currentH int
-
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if m := vidFormatRe.FindStringSubmatch(line); m != nil {
-			switch m[1] {
-			case "MJPG":
-				currentFormat = FormatMJPEG
-			case "YUYV":
-				currentFormat = FormatYUYV
-			default:
-				currentFormat = ""
-			}
-			currentW, currentH = 0, 0
-		} else if m := vidSizeRe.FindStringSubmatch(line); m != nil {
-			currentW, _ = strconv.Atoi(m[1])
-			currentH, _ = strconv.Atoi(m[2])
-		} else if m := vidFPSRe.FindStringSubmatch(line); m != nil && currentFormat != "" {
-			fps, _ := strconv.ParseFloat(m[1], 64)
-			if currentW > 0 && currentH > 0 && fps > 0 {
-				modes = append(modes, VideoDeviceMode{
-					Width:     currentW,
-					Height:    currentH,
-					Framerate: int(fps),
-					Format:    currentFormat,
-				})
-			}
-		}
-	}
-	return modes
-}
-
-// SelectBestVideoMode picks the highest-quality mode that does not exceed
-// maxW×maxH at maxFPS. MJPEG is preferred over YUYV. Within the same format,
-// the largest frame area wins; ties are broken by higher framerate.
-// Returns (mode, true) if at least one valid mode exists.
-func SelectBestVideoMode(modes []VideoDeviceMode, maxW, maxH, maxFPS int) (VideoDeviceMode, bool) {
-	var best VideoDeviceMode
-	found := false
-	for _, m := range modes {
-		if m.Width > maxW || m.Height > maxH || m.Framerate > maxFPS {
-			continue
-		}
-		if !found {
-			best = m
-			found = true
-			continue
-		}
-		// Prefer MJPEG
-		if m.Format == FormatMJPEG && best.Format != FormatMJPEG {
-			best = m
-			continue
-		}
-		if m.Format != FormatMJPEG && best.Format == FormatMJPEG {
-			continue
-		}
-		// Same format: largest pixel count first, then highest FPS
-		if m.Width*m.Height > best.Width*best.Height ||
-			(m.Width*m.Height == best.Width*best.Height && m.Framerate > best.Framerate) {
-			best = m
-		}
-	}
-	return best, found
-}
-
-// ListAudioDevices returns all ALSA capture devices reported by `arecord -l`,
-// excluding internal/virtual cards (e.g. Tegra APE) based on built-in patterns
-// and the MIC_EXCLUDE environment variable.
+// ListAudioDevices returns all ALSA capture devices reported by `arecord -l`.
 func ListAudioDevices() []AudioDeviceInfo {
 	out, err := exec.Command("arecord", "-l").Output()
 	if err != nil {
 		return nil
 	}
-	exclude := audioExcludePatterns()
-	var result []AudioDeviceInfo
-	for _, dev := range parseAudioDevices(string(out)) {
-		if isExcludedAudioDevice(dev.Name, exclude) {
-			Log.Infow("Audio device excluded by filter.", "device", dev.Device, "name", dev.Name)
-			continue
-		}
-		result = append(result, dev)
-	}
-	return result
+	return parseAudioDevices(string(out))
 }
 
 // arecordRe matches lines like:
@@ -338,4 +140,102 @@ func SelectBestAudioChannels(deviceMaxCh, configMaxCh int) int {
 		return deviceMaxCh
 	}
 	return configMaxCh
+}
+
+// ---------------------------------------------------------------------------
+// UID-based device resolution
+// ---------------------------------------------------------------------------
+
+// udevSerialRe matches an "ID_SERIAL=..." line from udevadm output.
+var udevSerialRe = regexp.MustCompile(`(?m)^ID_SERIAL=(.+)$`)
+
+// udevSerial runs udevadm on the given device node and returns the ID_SERIAL
+// property, or an empty string on failure.
+func udevSerial(deviceNode string) string {
+	out, err := exec.Command("udevadm", "info", "--query=property", "--name="+deviceNode).Output()
+	if err != nil {
+		return ""
+	}
+	if m := udevSerialRe.FindSubmatch(out); m != nil {
+		return strings.TrimSpace(string(m[1]))
+	}
+	return ""
+}
+
+// VideoDeviceUID returns the udev ID_SERIAL for the given /dev/videoN device.
+// This value is stable across reboots and independent of the enumeration order.
+// Returns an empty string when the information is unavailable (e.g. non-USB
+// devices or when udevadm is not installed).
+func VideoDeviceUID(device string) string {
+	return udevSerial(device)
+}
+
+// videoByIDRe matches symlink names in /dev/v4l/by-id/:
+//
+//	usb-{uid}-video-index{N}
+var videoByIDRe = regexp.MustCompile(`^usb-(.+)-video-index(\d+)$`)
+
+// VideoDeviceByUID scans /dev/v4l/by-id/ for the primary capture node
+// (index0) whose uid matches the given ID_SERIAL string (case-sensitive).
+// Returns the resolved absolute path (e.g. /dev/video2) and true on success,
+// or ("", false) when no matching symlink is found.
+func VideoDeviceByUID(uid string) (string, bool) {
+	entries, err := os.ReadDir("/dev/v4l/by-id")
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		m := videoByIDRe.FindStringSubmatch(e.Name())
+		if m == nil || m[1] != uid || m[2] != "0" {
+			continue
+		}
+		target, err := filepath.EvalSymlinks(filepath.Join("/dev/v4l/by-id", e.Name()))
+		if err != nil {
+			continue
+		}
+		return target, true
+	}
+	return "", false
+}
+
+// AudioDeviceUID returns the udev ID_SERIAL for ALSA card cardNum by querying
+// the corresponding /dev/snd/controlCN device node.
+// Returns an empty string when the information is unavailable.
+func AudioDeviceUID(cardNum int) string {
+	return udevSerial(fmt.Sprintf("/dev/snd/controlC%d", cardNum))
+}
+
+// audioByIDRe matches symlink names in /dev/snd/by-id/:
+//
+//	usb-{uid}-{NN}   (NN is the USB interface number, e.g. "02")
+var audioByIDRe = regexp.MustCompile(`^usb-(.+)-\d{2}$`)
+
+// controlCardRe extracts the card index from a controlCN path.
+var controlCardRe = regexp.MustCompile(`controlC(\d+)$`)
+
+// AudioCardByUID scans /dev/snd/by-id/ for the ALSA control device whose
+// uid matches the given ID_SERIAL string.
+// Returns the card number and true on success, or (-1, false) when not found.
+func AudioCardByUID(uid string) (int, bool) {
+	entries, err := os.ReadDir("/dev/snd/by-id")
+	if err != nil {
+		return -1, false
+	}
+	for _, e := range entries {
+		m := audioByIDRe.FindStringSubmatch(e.Name())
+		if m == nil || m[1] != uid {
+			continue
+		}
+		target, err := filepath.EvalSymlinks(filepath.Join("/dev/snd/by-id", e.Name()))
+		if err != nil {
+			continue
+		}
+		cm := controlCardRe.FindStringSubmatch(target)
+		if cm == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(cm[1])
+		return n, true
+	}
+	return -1, false
 }

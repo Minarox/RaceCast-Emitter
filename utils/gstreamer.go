@@ -130,13 +130,15 @@ func DetectCameraFormat(device string) (CameraFormat, error) {
 
 // VideoPipelineConfig holds the configuration for a video capture pipeline.
 type VideoPipelineConfig struct {
-	Name      string `json:"name"`
-	Device    string `json:"device"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	Framerate int    `json:"framerate"`
-	Bitrate   int    `json:"bitrate"`
-	Enabled   bool   `json:"enabled"`
+	Name           string `json:"name"`
+	Device         string `json:"device"`
+	Width          int    `json:"width"`
+	Height         int    `json:"height"`
+	Framerate      int    `json:"framerate"`
+	Bitrate        int    `json:"bitrate"`
+	Enabled        bool   `json:"enabled"`
+	VerticalFlip   bool   `json:"vertical_flip"`
+	HorizontalFlip bool   `json:"horizontal_flip"`
 }
 
 // AudioPipelineConfig holds the configuration for an audio capture pipeline.
@@ -239,6 +241,18 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 // format. The format-specific part is the source caps and decode/convert chain;
 // the NVMM encoder tail is shared. Returns (pipeline, false) for unknown formats.
 func buildVideoPipeline(cfg VideoPipelineConfig, format CameraFormat) (string, bool) {
+	// nvvidconv flip-method values:
+	//   0 = none, 2 = rotate-180 (H+V), 4 = horizontal-flip, 6 = vertical-flip
+	flipMethod := 0
+	switch {
+	case cfg.VerticalFlip && cfg.HorizontalFlip:
+		flipMethod = 2
+	case cfg.HorizontalFlip:
+		flipMethod = 4
+	case cfg.VerticalFlip:
+		flipMethod = 6
+	}
+
 	var srcCaps, decoder string
 	switch format {
 	case FormatMJPEG:
@@ -254,11 +268,11 @@ func buildVideoPipeline(cfg VideoPipelineConfig, format CameraFormat) (string, b
 		"v4l2src device=%s ! "+
 			"%s ! "+
 			"%s ! "+
-			"nvvidconv ! "+
+			"nvvidconv flip-method=%d ! "+
 			"video/x-raw(memory:NVMM),format=NV12 ! "+
 			"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
 			"appsink name=sink max-buffers=2 drop=true sync=false",
-		cfg.Device, srcCaps, decoder, cfg.Bitrate,
+		cfg.Device, srcCaps, decoder, flipMethod, cfg.Bitrate,
 	), true
 }
 

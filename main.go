@@ -126,18 +126,13 @@ func main() {
 		defer room.Disconnect()
 
 		// Quality limits read from environment variables.
-		// Defaults: 1080p30, 2 Mbit/s for video; 48 kHz stereo, 96 kbit/s for audio.
+		// Defaults: 2 Mbit/s for video; 48 kHz stereo, 96 kbit/s for audio.
 		smOpts := scripts.StreamManagerOptions{
-			MaxVideoWidth:    utils.ParseIntEnv("CAM_MAX_WIDTH", 1920),
-			MaxVideoHeight:   utils.ParseIntEnv("CAM_MAX_HEIGHT", 1080),
-			MaxVideoFPS:      utils.ParseIntEnv("CAM_MAX_FRAMERATE", 30),
-			VideoBitrate:     utils.ParseIntEnv("CAM_BITRATE", 2_000_000),
-			MaxAudioRate:     utils.ParseIntEnv("MIC_MAX_SAMPLE_RATE", 48000),
-			MaxAudioChannels: utils.ParseIntEnv("MIC_MAX_CHANNELS", 2),
-			AudioBitrate:     utils.ParseIntEnv("MIC_BITRATE", 96_000),
-			NoCam:            *noCam,
-			NoMic:            *noMic,
-			Fake:             *fake || *fakeStream,
+			VideoBitrate: utils.ParseIntEnv("CAM_BITRATE", 2_000_000),
+			AudioBitrate: utils.ParseIntEnv("MIC_BITRATE", 96_000),
+			NoCam:        *noCam,
+			NoMic:        *noMic,
+			Fake:         *fake || *fakeStream,
 		}
 
 		sm := scripts.NewStreamManager(room, smOpts)
