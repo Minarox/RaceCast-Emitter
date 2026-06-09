@@ -129,6 +129,9 @@ func DetectCameraFormat(device string) (CameraFormat, error) {
 	return "", fmt.Errorf("no supported format (MJPG/YUYV) found for device %s; v4l2-ctl output: %s", device, s)
 }
 
+// videoRecordBitrate is the H.264 bitrate used for local recording (8 Mbit/s).
+const videoRecordBitrate = 8_000_000
+
 // VideoPipelineConfig holds the configuration for a video capture pipeline.
 type VideoPipelineConfig struct {
 	Name    string `json:"name"`
@@ -151,6 +154,11 @@ type VideoPipelineConfig struct {
 	Enabled        bool `json:"enabled"`
 	VerticalFlip   bool `json:"vertical_flip"`
 	HorizontalFlip bool `json:"horizontal_flip"`
+
+	// RecordPath is the output MKV file path for local recording.
+	// When set, the pipeline is split via a tee: one branch streams (AV1 →
+	// appsink) and another records (H.264 + timecode → MKV file).
+	RecordPath string `json:"record_path"`
 }
 
 // AudioPipelineConfig holds the configuration for an audio capture pipeline.
@@ -161,6 +169,11 @@ type AudioPipelineConfig struct {
 	Channels   int    `json:"channels"`
 	Bitrate    int    `json:"bitrate"`
 	Enabled    bool   `json:"enabled"`
+
+	// RecordPath is the output MKV file path for local recording.
+	// When set, the pipeline is split via a tee: one branch streams (Opus →
+	// appsink) and another records (FLAC → MKV file).
+	RecordPath string `json:"record_path"`
 }
 
 // NewVideoPipeline builds a GStreamer AV1 pipeline from a V4L2 camera or a SMPTE
@@ -175,15 +188,34 @@ func NewVideoPipeline(cfg VideoPipelineConfig, fakeStream bool) (*GStreamerPipel
 
 	var pipelineStr string
 	if fakeStream {
-		pipelineStr = fmt.Sprintf(
-			"videotestsrc pattern=smpte is-live=true ! "+
-				"video/x-raw,format=I420,width=%d,height=%d,framerate=%d/1 ! "+
-				"nvvidconv ! "+
-				"video/x-raw(memory:NVMM),format=NV12 ! "+
-				"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
-				"appsink name=sink max-buffers=2 drop=true sync=false",
-			cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
-		)
+		if cfg.RecordPath == "" {
+			pipelineStr = fmt.Sprintf(
+				"videotestsrc pattern=smpte is-live=true ! "+
+					"video/x-raw,format=I420,width=%d,height=%d,framerate=%d/1 ! "+
+					"nvvidconv ! "+
+					"video/x-raw(memory:NVMM),format=NV12 ! "+
+					"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
+					"appsink name=sink max-buffers=2 drop=true sync=false",
+				cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate,
+			)
+		} else {
+			// Stream + record: tee splits raw frames into AV1→appsink and H.264+timecode→MKV.
+			pipelineStr = fmt.Sprintf(
+				"videotestsrc pattern=smpte is-live=true ! "+
+					"video/x-raw,format=I420,width=%d,height=%d,framerate=%d/1 ! "+
+					"tee name=t "+
+					"t. ! queue leaky=downstream max-size-buffers=2 ! "+
+					"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "+
+					"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
+					"appsink name=sink max-buffers=2 drop=true sync=false "+
+					"t. ! queue max-size-buffers=120 max-size-time=0 max-size-bytes=0 ! "+
+					"timecodestamper source=rtc ! "+
+					"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "+
+		"nvv4l2h264enc bitrate=%d iframeinterval=60 ! "+
+					"h264parse ! matroskamux streamable=true ! filesink location=\"%s\" sync=false",
+				cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate, videoRecordBitrate, cfg.RecordPath,
+			)
+		}
 	} else {
 		if err := checkVideoDevice(cfg.Device); err != nil {
 			return nil, err
@@ -219,30 +251,82 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 
 	var pipelineStr string
 	if fakeStream {
-		pipelineStr = fmt.Sprintf(
-			"audiotestsrc wave=sine freq=440 is-live=true ! "+
-				"audioconvert ! "+ 
-				"audioresample ! "+
-				"audio/x-raw,rate=%d,channels=%d ! "+
-				"opusenc bitrate=%d frame-size=20 perfect-timestamp=true audio-type=voice ! "+
-				"queue leaky=downstream max-size-buffers=2 ! "+
-				"appsink name=sink max-buffers=8 drop=true sync=false",
-			cfg.SampleRate, cfg.Channels, cfg.Bitrate,
-		)
+		if cfg.RecordPath == "" {
+			pipelineStr = fmt.Sprintf(
+				"audiotestsrc wave=sine freq=440 is-live=true ! "+
+					"audioconvert ! "+ 
+					"audioresample ! "+
+					"audio/x-raw,rate=%d,channels=%d ! "+
+					"opusenc bitrate=%d frame-size=20 perfect-timestamp=true audio-type=voice ! "+
+					"queue leaky=downstream max-size-buffers=2 ! "+
+					"appsink name=sink max-buffers=8 drop=true sync=false",
+				cfg.SampleRate, cfg.Channels, cfg.Bitrate,
+			)
+		} else {
+			// Stream + record: Opus→appsink (LiveKit) + AAC+timecode video→MKV (DaVinci).
+			// A 64×64 H.264 timecode track is muxed alongside the AAC audio so DaVinci
+			// Resolve can sync by SMPTE timecode (source=rtc).
+			pipelineStr = fmt.Sprintf(
+				"audiotestsrc wave=sine freq=440 is-live=true ! "+
+					"audioconvert ! audioresample ! "+
+					"audio/x-raw,rate=%d,channels=%d ! "+
+					"tee name=t "+
+					"t. ! queue leaky=downstream max-size-buffers=8 ! "+
+					"opusenc bitrate=%d frame-size=20 perfect-timestamp=true audio-type=voice ! "+
+					"queue leaky=downstream max-size-buffers=2 ! "+
+					"appsink name=sink max-buffers=8 drop=true sync=false "+
+					"t. ! queue max-size-buffers=0 max-size-time=5000000000 max-size-bytes=0 ! "+
+					"avenc_aac bitrate=320000 ! aacparse ! mux. "+
+					"videotestsrc pattern=black is-live=true ! "+
+					"video/x-raw,width=64,height=64,framerate=30/1 ! "+
+					"timecodestamper source=rtc ! "+
+					"nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=64,height=64 ! "+
+					"nvv4l2h264enc bitrate=50000 iframeinterval=30 ! "+
+					"h264parse ! mux. "+
+					"matroskamux name=mux streamable=true ! filesink location=\"%s\" sync=false",
+				cfg.SampleRate, cfg.Channels, cfg.Bitrate, cfg.RecordPath,
+			)
+		}
 	} else {
 		if err := checkAudioDevice(cfg.Device); err != nil {
 			return nil, err
 		}
-		pipelineStr = fmt.Sprintf(
-			"alsasrc device=%s ! "+
-				"audioconvert ! "+
-				"audioresample ! "+
-				"audio/x-raw,rate=%d,channels=%d ! "+
-				"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
-				"queue leaky=downstream max-size-buffers=2 ! "+
-				"appsink name=sink max-buffers=8 drop=true sync=false",
-			cfg.Device, cfg.SampleRate, cfg.Channels, cfg.Bitrate,
-		)
+		if cfg.RecordPath == "" {
+			pipelineStr = fmt.Sprintf(
+				"alsasrc device=%s ! "+
+					"audioconvert ! "+
+					"audioresample ! "+
+					"audio/x-raw,rate=%d,channels=%d ! "+
+					"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
+					"queue leaky=downstream max-size-buffers=2 ! "+
+					"appsink name=sink max-buffers=8 drop=true sync=false",
+				cfg.Device, cfg.SampleRate, cfg.Channels, cfg.Bitrate,
+			)
+		} else {
+			// Stream + record: Opus→appsink (LiveKit) + AAC+timecode video→MKV (DaVinci).
+			// A 64×64 H.264 timecode track is muxed alongside the AAC audio so DaVinci
+			// Resolve can sync by SMPTE timecode (source=rtc).
+			pipelineStr = fmt.Sprintf(
+				"alsasrc device=%s do-timestamp=true ! "+
+					"audioconvert ! audioresample ! "+
+					"audio/x-raw,rate=%d,channels=%d ! "+
+					"tee name=t "+
+					"t. ! queue leaky=downstream max-size-buffers=8 ! "+
+					"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
+					"queue leaky=downstream max-size-buffers=2 ! "+
+					"appsink name=sink max-buffers=8 drop=true sync=false "+
+					"t. ! queue max-size-buffers=0 max-size-time=5000000000 max-size-bytes=0 ! "+
+					"avenc_aac bitrate=320000 ! aacparse ! mux. "+
+					"videotestsrc pattern=black is-live=true ! "+
+					"video/x-raw,width=64,height=64,framerate=30/1 ! "+
+					"timecodestamper source=rtc ! "+
+					"nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=64,height=64 ! "+
+					"nvv4l2h264enc bitrate=50000 iframeinterval=30 ! "+
+					"h264parse ! mux. "+
+					"matroskamux name=mux streamable=true ! filesink location=\"%s\" sync=false",
+				cfg.Device, cfg.SampleRate, cfg.Channels, cfg.Bitrate, cfg.RecordPath,
+			)
+		}
 	}
 
 	Log.Debugw("GStreamer audio pipeline created.", "pipeline", pipelineStr)
@@ -285,15 +369,46 @@ func buildVideoPipeline(cfg VideoPipelineConfig, format CameraFormat) (string, b
 	// nvvidconv handles both flip and scaling (capture → stream resolution).
 	nvmmCaps := fmt.Sprintf("video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d", cfg.Width, cfg.Height)
 
+	streamTail := fmt.Sprintf(
+		"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
+			"appsink name=sink max-buffers=2 drop=true sync=false",
+		cfg.Bitrate,
+	)
+
+	if cfg.RecordPath == "" {
+		return fmt.Sprintf(
+			"v4l2src device=%s ! "+
+				"%s ! "+
+				"%s ! "+
+				"nvvidconv flip-method=%d ! "+
+				"%s ! "+
+				"%s",
+			cfg.Device, srcCaps, decoder, flipMethod, nvmmCaps, streamTail,
+		), true
+	}
+
+	// Stream + record: tee splits NVMM frames into:
+	//   • AV1 → appsink (LiveKit streaming)
+	//   • NVMM→RAM → timecodestamper → RAM→NVMM → H.264 → MKV (local recording)
+	recordTail := fmt.Sprintf(
+		"nvvidconv ! video/x-raw,format=I420 ! "+
+			"timecodestamper source=rtc ! "+
+			"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "+
+			"nvv4l2h264enc bitrate=%d iframeinterval=60 ! "+
+			"h264parse ! matroskamux streamable=true ! filesink location=\"%s\" sync=false",
+		videoRecordBitrate, cfg.RecordPath,
+	)
+
 	return fmt.Sprintf(
-		"v4l2src device=%s ! "+
+		"v4l2src device=%s do-timestamp=true ! "+
 			"%s ! "+
 			"%s ! "+
 			"nvvidconv flip-method=%d ! "+
 			"%s ! "+
-			"nvv4l2av1enc bitrate=%d iframeinterval=60 idrinterval=60 insert-seq-hdr=true ! "+
-			"appsink name=sink max-buffers=2 drop=true sync=false",
-		cfg.Device, srcCaps, decoder, flipMethod, nvmmCaps, cfg.Bitrate,
+			"tee name=t "+
+			"t. ! queue leaky=downstream max-size-buffers=2 ! %s "+
+			"t. ! queue max-size-buffers=120 max-size-time=0 max-size-bytes=0 ! %s",
+		cfg.Device, srcCaps, decoder, flipMethod, nvmmCaps, streamTail, recordTail,
 	), true
 }
 

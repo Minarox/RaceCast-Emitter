@@ -33,9 +33,10 @@ type StreamInfo struct {
 
 // CaptureOptions configures the CaptureManager at creation time.
 type CaptureOptions struct {
-	NoCam bool
-	NoMic bool
-	Fake  bool
+	NoCam     bool
+	NoMic     bool
+	Fake      bool
+	RecordDir string // if set, each device is also recorded to RecordDir/{name}_{HH-MM-SS}.mkv
 }
 
 // CaptureManager starts and monitors GStreamer pipelines for cameras and
@@ -128,6 +129,21 @@ func (cm *CaptureManager) Stop() {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+// recordPathFor returns the MKV output path for a device with the given name and kind,
+// or an empty string if recording is disabled (RecordDir is empty).
+// The filename format is "{name}_{video|audio}_{HH-MM-SS}.mkv".
+func (cm *CaptureManager) recordPathFor(name string, kind StreamKind) string {
+	if cm.opts.RecordDir == "" {
+		return ""
+	}
+	kindStr := "video"
+	if kind == AudioStream {
+		kindStr = "audio"
+	}
+	ts := time.Now().Format("15-04-05")
+	return fmt.Sprintf("%s/%s_%s_%s.mkv", cm.opts.RecordDir, name, kindStr, ts)
+}
 
 func (cm *CaptureManager) notifyAdded(info StreamInfo) {
 	cm.mu.Lock()
@@ -423,6 +439,7 @@ func (cm *CaptureManager) buildVideoCapture(device string, entry utils.CameraEnt
 		Bitrate:          bitrate,
 		VerticalFlip:     entry.VerticalFlip,
 		HorizontalFlip:   entry.HorizontalFlip,
+		RecordPath:       cm.recordPathFor(name, VideoStream),
 	}
 	utils.Log.Infow("Starting video capture.",
 		"device", device, "name", name, "uid", utils.VideoDeviceUID(device),
@@ -546,6 +563,7 @@ func (cm *CaptureManager) buildAudioCapture(device, alsaName string, entry utils
 		SampleRate: rate,
 		Channels:   channels,
 		Bitrate:    bitrate,
+		RecordPath: cm.recordPathFor(name, AudioStream),
 	}
 	utils.Log.Infow("Starting audio capture.",
 		"device", device, "name", name, "rate", rate, "channels", channels, "bitrate", bitrate)
@@ -594,11 +612,12 @@ func (cm *CaptureManager) removeAudioDevice(device string) {
 
 func (cm *CaptureManager) startFakeVideo() {
 	cfg := utils.VideoPipelineConfig{
-		Name:      "Fake Camera",
-		Width:     1920,
-		Height:    1080,
-		Framerate: 30,
-		Bitrate:   2_000_000,
+		Name:       "Fake Camera",
+		Width:      1920,
+		Height:     1080,
+		Framerate:  30,
+		Bitrate:    2_000_000,
+		RecordPath: cm.recordPathFor("Fake_Camera", VideoStream),
 	}
 	pipeline, err := utils.NewVideoPipeline(cfg, true)
 	if err != nil {
@@ -631,6 +650,7 @@ func (cm *CaptureManager) startFakeAudio() {
 		SampleRate: 48000,
 		Channels:   2,
 		Bitrate:    96_000,
+		RecordPath: cm.recordPathFor("Fake_Microphone", AudioStream),
 	}
 	pipeline, err := utils.NewAudioPipeline(cfg, true)
 	if err != nil {

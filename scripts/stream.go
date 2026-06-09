@@ -2,9 +2,10 @@ package scripts
 
 // StreamManagerOptions configures the StreamManager.
 type StreamManagerOptions struct {
-	NoCam bool
-	NoMic bool
-	Fake  bool
+	NoCam     bool
+	NoMic     bool
+	Fake      bool
+	RecordDir string // if set, each captured device is also recorded locally
 }
 
 // StreamManager wires a CaptureManager (GStreamer, no LiveKit dependency) to a
@@ -21,9 +22,10 @@ type StreamManager struct {
 // NewStreamManager creates and wires a CaptureManager and a PublishManager.
 func NewStreamManager(opts StreamManagerOptions) *StreamManager {
 	cm := NewCaptureManager(CaptureOptions{
-		NoCam: opts.NoCam,
-		NoMic: opts.NoMic,
-		Fake:  opts.Fake,
+		NoCam:     opts.NoCam,
+		NoMic:     opts.NoMic,
+		Fake:      opts.Fake,
+		RecordDir: opts.RecordDir,
 	})
 	pm := NewPublishManager()
 	cm.OnStreamAdded(pm.Publish)

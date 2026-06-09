@@ -122,10 +122,13 @@ func main() {
 	if !*noStream && (!*noCam || !*noMic) {
 		utils.InitGStreamer()
 
+		rm := scripts.NewRecordManager()
+
 		smOpts := scripts.StreamManagerOptions{
-			NoCam: *noCam,
-			NoMic: *noMic,
-			Fake:  *fake || *fakeStream,
+			NoCam:     *noCam,
+			NoMic:     *noMic,
+			Fake:      *fake || *fakeStream,
+			RecordDir: rm.Dir(),
 		}
 
 		sm := scripts.NewStreamManager(smOpts)
