@@ -5,6 +5,7 @@ package scripts
 // Quectel RG520N/RG52xF/RM520N/RM530N Series AT Commands Manual
 
 import (
+	"errors"
 	"math/rand"
 	"os"
 	"strings"
@@ -21,6 +22,7 @@ import (
 type atConn struct {
 	mu   sync.Mutex
 	port serial.Port
+	dead bool // true when the port has been invalidated by a USB disconnect
 }
 
 // modemCache holds the latest values written by the background polling goroutine.
@@ -49,6 +51,20 @@ var (
 // SetupModem opens the AT serial port, configures GNSS, and enables XTRA
 // auto-download so the first GPS fix is as fast as possible.
 func SetupModem() {
+	conn = &atConn{}
+	if err := conn.openPort(); err != nil {
+		utils.Log.Fatalw("Failed to open modem AT port", "port", atPortPath(), "error", err)
+	}
+	conn.configure()
+
+	// Poll modem and GPS independently from the main update goroutine so that
+	// serial latency (~6 s worst case for two AT commands) does not block the
+	// UPS read and LiveKit publish cycle.
+	go pollLoop()
+}
+
+// openPort opens (or reopens) the serial port after a USB reconnect.
+func (c *atConn) openPort() error {
 	portPath := atPortPath()
 	port, err := serial.Open(portPath, &serial.Mode{
 		BaudRate: 115200,
@@ -57,30 +73,36 @@ func SetupModem() {
 		Parity:   serial.NoParity,
 	})
 	if err != nil {
-		utils.Log.Fatalw("Failed to open modem AT port", "port", portPath, "error", err)
+		return err
 	}
-	conn = &atConn{port: port}
+	c.mu.Lock()
+	if c.port != nil {
+		_ = c.port.Close()
+	}
+	c.port = port
+	c.dead = false
+	c.mu.Unlock()
+	return nil
+}
 
-	conn.send("ATE0")      // disable echo
-	conn.send("AT+CMEE=2") // verbose error codes
+// configure sends the initial AT commands after (re)opening the port.
+func (c *atConn) configure() {
+	c.send("ATE0")      // disable echo
+	c.send("AT+CMEE=2") // verbose error codes
+	c.send("AT&D0")     // ignore DTR — prevents USB reset cascade on port close
 
 	// Enable XTRA assistance before starting GPS so the first fix benefits from
 	// the almanac. The modem auto-downloads a fresh file whenever it expires.
-	conn.send("AT+QGPSXTRA=1")
-	conn.send("AT+QGPSXTRAAUTODL=1")
+	c.send("AT+QGPSXTRA=1")
+	c.send("AT+QGPSXTRAAUTODL=1")
 
 	// All GNSS constellations: GPS + GLONASS + BeiDou + Galileo + SBAS + QZSS
-	conn.send(`AT+QGPSCFG="gnssconfig",7`)
+	c.send(`AT+QGPSCFG="gnssconfig",7`)
 
 	// Start GPS engine (idempotent: skip if already running)
-	if !strings.Contains(conn.send("AT+QGPS?"), "+QGPS: 1") {
-		conn.send("AT+QGPS=1")
+	if !strings.Contains(c.send("AT+QGPS?"), "+QGPS: 1") {
+		c.send("AT+QGPS=1")
 	}
-
-	// Poll modem and GPS independently from the main update goroutine so that
-	// serial latency (~6 s worst case for two AT commands) does not block the
-	// UPS read and LiveKit publish cycle.
-	go pollLoop()
 }
 
 // GetModemData returns a snapshot of the latest cached modem and GPS data.
@@ -134,15 +156,49 @@ func GetFakeModemData() map[string]any {
 // pollLoop runs in its own goroutine and refreshes the cache once per second.
 // It is decoupled from the main update loop so serial latency never delays
 // UPS reads or LiveKit publishes.
+//
+// When the modem USB-resets, send() marks conn.dead=true. pollLoop detects this,
+// waits for the device to reappear, reopens the port, and reconfigures the modem.
 func pollLoop() {
 	for {
 		start := time.Now()
+
+		conn.mu.Lock()
+		isDead := conn.dead
+		conn.mu.Unlock()
+
+		if isDead {
+			utils.Log.Warnw("Modem AT port lost, waiting for USB reconnect…")
+			waitForDevice(atPortPath())
+			if err := conn.openPort(); err != nil {
+				utils.Log.Warnw("Reopen failed, retrying", "error", err)
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			utils.Log.Infow("Modem AT port reopened, reconfiguring…")
+			conn.configure()
+		}
+
 		fetchNetworkInfo()
 		fetchGPS()
 		if elapsed := time.Since(start); elapsed < time.Second {
 			time.Sleep(time.Second - elapsed)
 		}
 	}
+}
+
+// waitForDevice blocks until portPath exists in the filesystem (device reappears
+// after USB reenumeration). Gives up after 60 s and returns anyway.
+func waitForDevice(portPath string) {
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(portPath); err == nil {
+			time.Sleep(200 * time.Millisecond) // let the driver finish attaching
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	utils.Log.Warnw("Timed out waiting for modem device", "port", portPath)
 }
 
 // ── Data fetchers ─────────────────────────────────────────────────────────────
@@ -268,12 +324,26 @@ func dbmToPercent(dbm, minDBm, maxDBm int) *int {
 
 // ── AT serial layer ───────────────────────────────────────────────────────────
 
+// errPortDead is returned by send when the serial port has been invalidated
+// by a USB disconnect. pollLoop uses this to trigger reconnection.
+var errPortDead = errors.New("modem port dead")
+
 // send writes a command and returns the full response (blocking, up to 3 s).
+// On I/O error it marks the port dead and returns an empty string so callers
+// that ignore the second return value degrade gracefully.
 func (c *atConn) send(cmd string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.port.ResetInputBuffer()
-	c.port.Write([]byte(cmd + "\r\n"))
+	if c.dead {
+		return ""
+	}
+	_ = c.port.ResetInputBuffer()
+	_, err := c.port.Write([]byte(cmd + "\r\n"))
+	if err != nil {
+		utils.Log.Warnw("AT write error, marking port dead", "cmd", cmd, "error", err)
+		c.dead = true
+		return ""
+	}
 	return c.readResponse(3 * time.Second)
 }
 
