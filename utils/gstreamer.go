@@ -266,22 +266,24 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 			// Stream + record: Opus→appsink (LiveKit) + AAC+timecode video→MKV (DaVinci).
 			// A 64×64 H.264 timecode track is muxed alongside the AAC audio so DaVinci
 			// Resolve can sync by SMPTE timecode (source=rtc).
+			// audioconvert is added per-branch so each branch negotiates its own format
+			// independently, avoiding not-negotiated errors on the tee.
 			pipelineStr = fmt.Sprintf(
 				"audiotestsrc wave=sine freq=440 is-live=true ! "+
 					"audioconvert ! audioresample ! "+
 					"audio/x-raw,rate=%d,channels=%d ! "+
 					"tee name=t "+
 					"t. ! queue leaky=downstream max-size-buffers=8 ! "+
+					"audioconvert ! "+
 					"opusenc bitrate=%d frame-size=20 perfect-timestamp=true audio-type=voice ! "+
 					"queue leaky=downstream max-size-buffers=2 ! "+
 					"appsink name=sink max-buffers=8 drop=true sync=false "+
 					"t. ! queue max-size-buffers=0 max-size-time=5000000000 max-size-bytes=0 ! "+
-					"avenc_aac bitrate=320000 ! aacparse ! mux. "+
+					"audioconvert ! avenc_aac bitrate=320000 ! aacparse ! mux. "+
 					"videotestsrc pattern=black is-live=true ! "+
 					"video/x-raw,width=64,height=64,framerate=30/1 ! "+
 					"timecodestamper source=rtc ! "+
-					"nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=64,height=64 ! "+
-					"nvv4l2h264enc bitrate=50000 iframeinterval=30 ! "+
+					"x264enc bitrate=50 key-int-max=30 tune=zerolatency ! "+
 					"h264parse ! mux. "+
 					"matroskamux name=mux streamable=true ! filesink location=\"%s\" sync=false",
 				cfg.SampleRate, cfg.Channels, cfg.Bitrate, cfg.RecordPath,
@@ -306,22 +308,24 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 			// Stream + record: Opus→appsink (LiveKit) + AAC+timecode video→MKV (DaVinci).
 			// A 64×64 H.264 timecode track is muxed alongside the AAC audio so DaVinci
 			// Resolve can sync by SMPTE timecode (source=rtc).
+			// audioconvert is added per-branch so each branch negotiates its own format
+			// independently, avoiding not-negotiated errors on the tee.
 			pipelineStr = fmt.Sprintf(
 				"alsasrc device=%s do-timestamp=true ! "+
 					"audioconvert ! audioresample ! "+
 					"audio/x-raw,rate=%d,channels=%d ! "+
 					"tee name=t "+
 					"t. ! queue leaky=downstream max-size-buffers=8 ! "+
+					"audioconvert ! "+
 					"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
 					"queue leaky=downstream max-size-buffers=2 ! "+
 					"appsink name=sink max-buffers=8 drop=true sync=false "+
 					"t. ! queue max-size-buffers=0 max-size-time=5000000000 max-size-bytes=0 ! "+
-					"avenc_aac bitrate=320000 ! aacparse ! mux. "+
+					"audioconvert ! avenc_aac bitrate=320000 ! aacparse ! mux. "+
 					"videotestsrc pattern=black is-live=true ! "+
 					"video/x-raw,width=64,height=64,framerate=30/1 ! "+
 					"timecodestamper source=rtc ! "+
-					"nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=64,height=64 ! "+
-					"nvv4l2h264enc bitrate=50000 iframeinterval=30 ! "+
+					"x264enc bitrate=50 key-int-max=30 tune=zerolatency ! "+
 					"h264parse ! mux. "+
 					"matroskamux name=mux streamable=true ! filesink location=\"%s\" sync=false",
 				cfg.Device, cfg.SampleRate, cfg.Channels, cfg.Bitrate, cfg.RecordPath,
