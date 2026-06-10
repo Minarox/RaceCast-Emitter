@@ -387,26 +387,30 @@ func buildVideoPipeline(cfg VideoPipelineConfig, format CameraFormat) (string, b
 		), true
 	}
 
-	// Stream + record: tee splits NVMM frames into:
-	//   • AV1 → appsink (LiveKit streaming)
-	//   • NVMM→RAM → timecodestamper → RAM→NVMM → H.264 → MKV (local recording)
+	// Stream + record: tee placed right after the decoder (capture resolution) so
+	// each branch scales independently:
+	//   • stream branch  → nvvidconv flip+scale → stream res → AV1 → appsink
+	//   • record branch  → nvvidconv flip only  → capture res → H.264+timecode → MKV
+	nvmmCaptureCaps := fmt.Sprintf(
+		"video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d", captureW, captureH,
+	)
 	recordTail := fmt.Sprintf(
-		"nvvidconv ! video/x-raw,format=I420 ! "+
+		"nvvidconv flip-method=%d ! "+
+			"video/x-raw,format=I420,width=%d,height=%d ! "+
 			"timecodestamper source=rtc ! "+
-			"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "+
+			"nvvidconv ! %s ! "+
 			"nvv4l2h264enc bitrate=%d iframeinterval=60 ! "+
 			"h264parse ! matroskamux streamable=true ! filesink location=\"%s\" sync=false",
-		videoRecordBitrate, cfg.RecordPath,
+		flipMethod, captureW, captureH, nvmmCaptureCaps, videoRecordBitrate, cfg.RecordPath,
 	)
 
 	return fmt.Sprintf(
 		"v4l2src device=%s do-timestamp=true ! "+
 			"%s ! "+
 			"%s ! "+
-			"nvvidconv flip-method=%d ! "+
-			"%s ! "+
 			"tee name=t "+
-			"t. ! queue leaky=downstream max-size-buffers=2 ! %s "+
+			"t. ! queue leaky=downstream max-size-buffers=2 ! "+
+			"nvvidconv flip-method=%d ! %s ! %s "+
 			"t. ! queue max-size-buffers=120 max-size-time=0 max-size-bytes=0 ! %s",
 		cfg.Device, srcCaps, decoder, flipMethod, nvmmCaps, streamTail, recordTail,
 	), true
