@@ -112,17 +112,45 @@ func (cm *CaptureManager) Start() {
 }
 
 // Stop shuts down all running pipelines and the hot-plug watcher.
+// EOS is sent to all pipelines simultaneously while their goroutines are still
+// running, then all pipelines drain concurrently (event-driven, not a fixed
+// sleep). SetNull is called only after every muxer has confirmed EOS.
 func (cm *CaptureManager) Stop() {
 	close(cm.stopCh)
 	cm.wg.Wait()
 
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	for key, p := range cm.pipelines {
-		p.Stop()
-		p.Wait()
+	pipelines := make([]*utils.GStreamerPipeline, 0, len(cm.pipelines))
+	for _, p := range cm.pipelines {
+		pipelines = append(pipelines, p)
+	}
+	cm.pipelines = make(map[string]*utils.GStreamerPipeline)
+	cm.mu.Unlock()
+
+	// Phase 1: send EOS to all pipelines at once while goroutines are active.
+	// loop() keeps draining each appsink; watchBus() will exit naturally once
+	// the pipeline EOS message arrives (all sinks done, muxer index written).
+	for _, p := range pipelines {
+		p.SendEOS()
+	}
+
+	// Phase 2: wait for every pipeline to drain concurrently.
+	// Each goroutine returns as soon as its muxer confirms EOS — no pipeline
+	// blocks another. 8 s is a safety cap for hung encoders / disconnected devices.
+	var wg sync.WaitGroup
+	for _, p := range pipelines {
+		wg.Add(1)
+		go func(p *utils.GStreamerPipeline) {
+			defer wg.Done()
+			p.WaitDrain(8 * time.Second)
+		}(p)
+	}
+	wg.Wait()
+
+	// Phase 3: release hardware resources and free GStreamer objects.
+	for _, p := range pipelines {
+		p.SetNull()
 		p.Free()
-		delete(cm.pipelines, key)
 	}
 }
 

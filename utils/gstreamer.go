@@ -66,6 +66,12 @@ package utils
 //             NULL));
 //     gst_element_send_event(sink, ev);
 // }
+//
+// // Send EOS event into the pipeline. The event propagates downstream and
+// // causes muxers (e.g. matroskamux) to flush and write their seek index.
+// static void gst_send_eos_go(GstElement *pipeline) {
+//     gst_element_send_event(pipeline, gst_event_new_eos());
+// }
 import "C"
 
 import (
@@ -212,7 +218,7 @@ func NewVideoPipeline(cfg VideoPipelineConfig, fakeStream bool) (*GStreamerPipel
 					"timecodestamper source=rtc ! "+
 					"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "+
 		"nvv4l2h264enc bitrate=%d iframeinterval=60 ! "+
-					"h264parse ! matroskamux streamable=true ! filesink location=\"%s\" sync=false",
+					"h264parse ! matroskamux ! filesink location=\"%s\" sync=false",
 				cfg.Width, cfg.Height, cfg.Framerate, cfg.Bitrate, videoRecordBitrate, cfg.RecordPath,
 			)
 		}
@@ -285,7 +291,7 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 					"timecodestamper source=rtc ! "+
 					"x264enc bitrate=50 key-int-max=30 tune=zerolatency ! "+
 					"h264parse ! mux. "+
-					"matroskamux name=mux streamable=true ! filesink location=\"%s\" sync=false",
+					"matroskamux name=mux ! filesink location=\"%s\" sync=false",
 				cfg.SampleRate, cfg.Channels, cfg.Bitrate, cfg.RecordPath,
 			)
 		}
@@ -327,7 +333,7 @@ func NewAudioPipeline(cfg AudioPipelineConfig, fakeStream bool) (*GStreamerPipel
 					"timecodestamper source=rtc ! "+
 					"x264enc bitrate=50 key-int-max=30 tune=zerolatency ! "+
 					"h264parse ! mux. "+
-					"matroskamux name=mux streamable=true ! filesink location=\"%s\" sync=false",
+					"matroskamux name=mux ! filesink location=\"%s\" sync=false",
 				cfg.Device, cfg.SampleRate, cfg.Channels, cfg.Bitrate, cfg.RecordPath,
 			)
 		}
@@ -404,7 +410,7 @@ func buildVideoPipeline(cfg VideoPipelineConfig, format CameraFormat) (string, b
 			"timecodestamper source=rtc ! "+
 			"nvvidconv ! %s ! "+
 			"nvv4l2h264enc bitrate=%d iframeinterval=60 ! "+
-			"h264parse ! matroskamux streamable=true ! filesink location=\"%s\" sync=false",
+		"h264parse ! matroskamux ! filesink location=\"%s\" sync=false",
 		flipMethod, captureW, captureH, nvmmCaptureCaps, videoRecordBitrate, cfg.RecordPath,
 	)
 
@@ -543,20 +549,58 @@ func (p *GStreamerPipeline) SetErrorCallback(fn func()) {
 }
 
 // Wait blocks until all internal goroutines (loop, watchBus) have exited.
-// Always call this between Stop() and Free() to avoid use-after-free races.
 func (p *GStreamerPipeline) Wait() {
 	p.wg.Wait()
 }
 
-// Stop tears down the pipeline gracefully.
+// SendEOS injects an EOS event at the pipeline source while goroutines are
+// still running. The event propagates downstream: loop() keeps draining the
+// appsink (preventing back-pressure), and watchBus() exits naturally when the
+// pipeline EOS message arrives on the bus (i.e. after all sinks — appsink AND
+// filesink/matroskamux — have finished).
+func (p *GStreamerPipeline) SendEOS() {
+	C.gst_send_eos_go(p.pipeline)
+}
+
+// WaitDrain waits for internal goroutines to exit naturally after EOS.
+// loop() exits when appsink signals EOS; watchBus() exits when the pipeline
+// EOS bus message arrives (all sinks done, muxer index written).
+// If the pipeline does not drain within timeout, the context is cancelled as
+// a safety fallback (e.g. device already disconnected, encoder hung).
+func (p *GStreamerPipeline) WaitDrain(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() { p.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		// Clean drain — goroutines exited naturally after EOS.
+	case <-time.After(timeout):
+		// Safety fallback: force goroutines to exit.
+		p.mu.Lock()
+		cancel := p.cancel
+		p.mu.Unlock()
+		cancel()
+		p.wg.Wait()
+	}
+}
+
+// SetNull transitions the pipeline to GST_STATE_NULL, releasing hardware
+// and driver resources. Call after WaitDrain.
+func (p *GStreamerPipeline) SetNull() {
+	C.gst_element_set_state(p.pipeline, C.GST_STATE_NULL)
+}
+
+// Stop gracefully tears down a single pipeline.
+// EOS is sent while goroutines are still active so that the appsink branch
+// keeps draining (no back-pressure) and the muxer can write its seek index
+// before SetNull releases hardware resources.
 func (p *GStreamerPipeline) Stop() {
 	p.mu.Lock()
-	cancel := p.cancel
 	p.running = false
 	p.mu.Unlock()
 
-	cancel()
-	C.gst_element_set_state(p.pipeline, C.GST_STATE_NULL)
+	p.SendEOS()
+	p.WaitDrain(8 * time.Second)
+	p.SetNull()
 }
 
 // Free releases GStreamer resources. Must be called after Stop.

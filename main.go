@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"racecast-emitter/scripts"
@@ -136,5 +138,11 @@ func main() {
 		defer sm.Stop()
 	}
 
-	select {}
+	// Wait for SIGINT (Ctrl+C) or SIGTERM to trigger a graceful shutdown.
+	// The deferred sm.Stop() will send EOS to all pipelines so that muxers
+	// (matroskamux) can finalize the MKV files with proper seek indexes.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	utils.Log.Infow("Shutdown signal received, stopping gracefully...")
 }
