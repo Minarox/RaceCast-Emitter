@@ -1,0 +1,12 @@
+# build output
+racecast-emitter
+
+# environment variables
+.env*
+!.env.example
+
+# macOS-specific files
+.DS_Store
+
+# jetbrains setting folder
+.idea/

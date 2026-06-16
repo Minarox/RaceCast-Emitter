@@ -1,0 +1,30 @@
+# List devices : v4l2-ctl --list-devices
+# UID : udevadm info --query=property --name=/dev/video0 | grep ID_SERIAL
+# Supported formats : v4l2-ctl --list-formats-ext -d /dev/video0
+cameras:
+  - uid: "Generic_USB_Camera_200901010001"
+    name: "Route"
+    width: 1920
+    height: 1080
+    framerate: 30
+    vertical_flip: true
+    horizontal_flip: true
+
+  - uid: "HD_USB_Camera_HD_USB_Camera"
+    name: "Habitacle"
+    disabled: true
+    width: 1920
+    height: 1080
+    framerate: 30
+    vertical_flip: true
+    horizontal_flip: true
+
+
+# List devices : arecord -l
+# UID : udevadm info --query=property --name=/dev/snd/pcmC0D0c | grep ID_SERIAL
+# Supported formats : arecord -D hw:0,0 --dump-hw-params
+microphones:
+  - uid: "Generic_USB_Camera_200901010001"
+    name: "Habitacle"
+    sample_rate: 48000
+    channels: 2
