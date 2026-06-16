@@ -2,21 +2,47 @@ package main
 
 import (
 	"context"
+	"flag"
+	"math"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	"racecast-emitter/internal/config"
+	"racecast-emitter/internal/env"
 	"racecast-emitter/internal/logger"
 	"racecast-emitter/internal/pipeline"
 	"racecast-emitter/internal/udev"
+	"racecast-emitter/internal/ups"
 )
 
 const configFile = "devices.yaml"
 
 func main() {
+	env.Load(".env")
+	upsFlag := flag.Bool("ups", false, "Lit et affiche les valeurs de l'UPS en continu (optionnel : intervalle en secondes, défaut 5)")
+	flag.Parse()
+
+	if *upsFlag {
+		logger.InitConsole()
+		interval := 5 * time.Second
+		if args := flag.Args(); len(args) > 0 {
+			if n, err := strconv.ParseFloat(args[0], 64); err == nil && n >= 0.05 {
+				ms := int64(math.Round(n * 1000))
+				interval = time.Duration(ms) * time.Millisecond
+			} else {
+				logger.Fatal("[ups] Intervalle invalide : %q (nombre >= 0.05 attendu)", args[0])
+			}
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		ups.Run(ctx, interval)
+		return
+	}
+
 	closeLog := logger.Init()
 	defer closeLog()
 
