@@ -13,6 +13,7 @@ import (
 
 	"racecast-emitter/internal/config"
 	"racecast-emitter/internal/env"
+	"racecast-emitter/internal/livekit"
 	"racecast-emitter/internal/logger"
 	"racecast-emitter/internal/pipeline"
 	"racecast-emitter/internal/udev"
@@ -23,9 +24,23 @@ const configFile = "devices.yaml"
 
 func main() {
 	env.Load(".env")
-	upsFlag := flag.Bool("ups", false, "Lit et affiche les valeurs de l'UPS en continu (optionnel : intervalle en secondes, défaut 5)")
+	upsFlag    := flag.Bool("ups",    false, "Lit et affiche les valeurs de l'UPS en continu (optionnel : intervalle en secondes, défaut 5)")
+	recordFlag := flag.Bool("record", false, "Enregistrement uniquement (sans diffusion LiveKit)")
+	streamFlag := flag.Bool("stream", false, "Diffusion LiveKit uniquement (sans enregistrement)")
 	flag.Parse()
 
+	// Vérification de l'exclusivité des flags
+	nSet := 0
+	for _, b := range []bool{*upsFlag, *recordFlag, *streamFlag} {
+		if b {
+			nSet++
+		}
+	}
+	if nSet > 1 {
+		logger.Fatal("Les options --ups, --record et --stream sont mutuellement exclusives")
+	}
+
+	// Mode UPS
 	if *upsFlag {
 		logger.InitConsole()
 		interval := 5 * time.Second
@@ -43,6 +58,9 @@ func main() {
 		return
 	}
 
+	doRecord := !*streamFlag // true si --record ou aucun flag
+	doStream  := !*recordFlag // true si --stream ou aucun flag
+
 	closeLog := logger.Init()
 	defer closeLog()
 
@@ -51,68 +69,85 @@ func main() {
 		logger.Fatal("Erreur de configuration : %v", err)
 	}
 
-	// Création des slots (un par périphérique configuré)
-	cameraSlots := make(map[string]*pipeline.Slot, len(cfg.Cameras))
-	for _, cam := range cfg.Cameras {
-		if cam.Disabled {
-			logger.Info("[camera:%s] Désactivée dans la configuration, ignorée", cam.Name)
-			continue
+	// Création des slots d'enregistrement
+	var cameraSlots map[string]*pipeline.Slot
+	var micSlots map[string]*pipeline.Slot
+
+	if doRecord {
+		cameraSlots = make(map[string]*pipeline.Slot, len(cfg.Cameras))
+		for _, cam := range cfg.Cameras {
+			if cam.Disabled {
+				logger.Info("[camera:%s] Désactivée dans la configuration, ignorée", cam.Name)
+				continue
+			}
+			cameraSlots[cam.UID] = &pipeline.Slot{}
 		}
-		cameraSlots[cam.UID] = &pipeline.Slot{}
-	}
-	micSlots := make(map[string]*pipeline.Slot, len(cfg.Microphones))
-	for _, mic := range cfg.Microphones {
-		micSlots[mic.UID] = &pipeline.Slot{}
+		micSlots = make(map[string]*pipeline.Slot, len(cfg.Microphones))
+		for _, mic := range cfg.Microphones {
+			micSlots[mic.UID] = &pipeline.Slot{}
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// Écoute des événements udev (connexion/déconnexion USB via netlink)
-	events, err := udev.Listen(ctx)
-	if err != nil {
-		logger.Fatal("Impossible d'ouvrir le socket netlink udev : %v", err)
-	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		// Scan initial pour les périphériques déjà connectés au démarrage
-		pipeline.Poll(ctx, cfg, cameraSlots, micSlots, &wg)
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev, ok := <-events:
-				if !ok {
-					return
-				}
-				if ev.Action != "add" {
-					continue
-				}
-				// Boucle de retry avec délais croissants : le nœud /dev peut
-				// mettre un temps variable à apparaître après l'événement udev.
-				// Poll est idempotent (ne redémarre pas un pipeline déjà actif),
-				// donc le rappeler plusieurs fois est sans effet de bord.
-				// Fenêtre totale : ~5s (300+500+1000+2000+1200ms de délais cumulés).
-				for _, delay := range []time.Duration{
-					300 * time.Millisecond,
-					500 * time.Millisecond,
-					1 * time.Second,
-					2 * time.Second,
-				} {
-					select {
-					case <-time.After(delay):
-					case <-ctx.Done():
-						return
-					}
-					pipeline.Poll(ctx, cfg, cameraSlots, micSlots, &wg)
-				}
+	// Connexion LiveKit (non bloquante : avertissement si indisponible)
+	if doStream {
+		lkCfg, err := livekit.LoadConfig()
+		if err != nil {
+			logger.Warn("[livekit] Configuration incomplète, diffusion désactivée : %v", err)
+		} else {
+			lkRoom, err := livekit.Connect(lkCfg)
+			if err != nil {
+				logger.Warn("[livekit] Connexion échouée, diffusion désactivée : %v", err)
+			} else {
+				defer lkRoom.Disconnect()
 			}
 		}
-	}()
+	}
+
+	// Écoute des événements udev et boucle de polling (enregistrement uniquement)
+	if doRecord {
+		events, err := udev.Listen(ctx)
+		if err != nil {
+			logger.Fatal("Impossible d'ouvrir le socket netlink udev : %v", err)
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			// Scan initial pour les périphériques déjà connectés au démarrage
+			pipeline.Poll(ctx, cfg, cameraSlots, micSlots, &wg)
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev, ok := <-events:
+					if !ok {
+						return
+					}
+					if ev.Action != "add" {
+						continue
+					}
+					for _, delay := range []time.Duration{
+						300 * time.Millisecond,
+						500 * time.Millisecond,
+						1 * time.Second,
+						2 * time.Second,
+					} {
+						select {
+						case <-time.After(delay):
+						case <-ctx.Done():
+							return
+						}
+						pipeline.Poll(ctx, cfg, cameraSlots, micSlots, &wg)
+					}
+				}
+			}
+		}()
+	}
 
 	// Attente d'un signal d'arrêt (Ctrl+C, SIGTERM, etc.)
 	sigCh := make(chan os.Signal, 1)
@@ -124,11 +159,13 @@ func main() {
 	cancel()
 
 	// Envoyer EOS à tous les pipelines actifs
-	for _, s := range cameraSlots {
-		s.SendEOS()
-	}
-	for _, s := range micSlots {
-		s.SendEOS()
+	if doRecord {
+		for _, s := range cameraSlots {
+			s.SendEOS()
+		}
+		for _, s := range micSlots {
+			s.SendEOS()
+		}
 	}
 
 	wg.Wait()
