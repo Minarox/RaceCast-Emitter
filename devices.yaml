@@ -9,15 +9,25 @@ cameras:
     framerate: 30
     vertical_flip: true
     horizontal_flip: true
+    stream:
+      width: 1280
+      height: 720
+      framerate: 30
+      bitrate: 1000000
 
   - uid: "HD_USB_Camera_HD_USB_Camera"
     name: "Habitacle"
-    disabled: true
+    disabled: false
     width: 1920
     height: 1080
     framerate: 30
     vertical_flip: true
     horizontal_flip: true
+    stream:
+      width: 1280
+      height: 720
+      framerate: 30
+      bitrate: 1000000
 
 
 # List devices : arecord -l
@@ -28,3 +38,5 @@ microphones:
     name: "Habitacle"
     sample_rate: 48000
     channels: 2
+    stream:
+      bitrate: 24000

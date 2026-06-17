@@ -7,6 +7,7 @@ require (
 	github.com/d2r2/go-logger v0.0.0-20210606094344-60e9d1233e22
 	github.com/livekit/protocol v1.46.0
 	github.com/livekit/server-sdk-go/v2 v2.16.6
+	github.com/pion/webrtc/v4 v4.2.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -57,7 +58,6 @@ require (
 	github.com/pion/stun/v3 v3.1.4 // indirect
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.8 // indirect
-	github.com/pion/webrtc/v4 v4.2.11 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/redis/go-redis/v9 v9.20.0 // indirect
 	github.com/rogpeppe/go-internal v1.10.0 // indirect
