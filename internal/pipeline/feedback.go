@@ -150,8 +150,31 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 			lossPct = 100.0 * float64(deltaLost) / total
 		}
 
+		// Modem-based pre-emptive ceiling: limits the ABR upper bound based on
+		// the cellular technology and signal quality, before SRT stats degrade.
+		// When the modem is unavailable the ceiling equals maxBitrate (no effect).
+		effectiveMax := maxBitrate
+		modemStats, modemErr := modem.GetSignalStats()
+		if modemErr == nil {
+			effectiveMax = modem.BitrateAdvisoryFromStats(maxBitrate, modemStats)
+			if effectiveMax != prevEffectiveMax {
+				logger.Info("[abr:%s] Modem ceiling: %d bps (tech=%q signal=%d%%)",
+					encoderName, effectiveMax, modemStats.Tech, modemStats.Quality)
+				prevEffectiveMax = effectiveMax
+			}
+			// Enforce the ceiling immediately on a downgrade (e.g. LTE → UMTS)
+			// even when SRT stats are still clean.
+			if currentBitrate > effectiveMax {
+				logger.Info("[abr:%s] Modem ceiling enforced: %d → %d bps",
+					encoderName, currentBitrate, effectiveMax)
+				p.SetBitrate(encoderName, effectiveMax)
+				currentBitrate = effectiveMax
+				stableCount = 0
+			}
+		}
+
 		st := localStats{LossPct: lossPct, RTTMS: rttMS, BandwidthMbps: bwMbps}
-		newBitrate := adaptBitrate(currentBitrate, st, minBitrate, maxBitrate, &stableCount)
+		newBitrate := adaptBitrate(currentBitrate, st, minBitrate, effectiveMax, &stableCount)
 		if newBitrate != currentBitrate {
 			logger.Info("[abr:%s] Bitrate %d → %d bps (loss=%.1f%% rtt=%.0fms bw=%.1fMbps)",
 				encoderName, currentBitrate, newBitrate, lossPct, rttMS, bwMbps)

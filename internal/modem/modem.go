@@ -188,6 +188,68 @@ func GetSignalStats() (SignalStats, error) {
 	}, nil
 }
 
+// BitrateAdvisoryFromStats returns the recommended maximum streaming bitrate
+// (bps) based on the provided cellular signal statistics. It acts as a
+// pre-emptive ceiling that complements the reactive SRT-based ABR: instead of
+// waiting for packet loss to appear, it pre-limits the bitrate when the radio
+// link capacity is structurally lower than maxBitrate.
+//
+// Design principles:
+//   - 5G NR and 4G LTE never receive a technology penalty (both exceed 12 Mbps).
+//   - HSPA / HSPA+ (3G+) receives a small ceiling (~85 %).
+//   - UMTS 3G base is capped more aggressively (~55 %).
+//   - 2G (GPRS, EDGE) is reduced to the minimum floor (20 %).
+//   - Signal quality below 50 % triggers an additional pre-emptive reduction;
+//     above 50 % the SRT ABR is sufficient to handle transient losses.
+func BitrateAdvisoryFromStats(maxBitrate int, s SignalStats) int {
+	tech := strings.ToLower(s.Tech)
+
+	var techFactor float64
+	switch {
+	case strings.Contains(tech, "5gnr") || strings.Contains(tech, "nr5g"):
+		techFactor = 1.0 // 5G NR
+	case strings.Contains(tech, "lte"):
+		techFactor = 1.0 // 4G LTE — full bitrate allowed
+	case strings.Contains(tech, "hspa") || strings.Contains(tech, "hsdpa") || strings.Contains(tech, "hsupa"):
+		techFactor = 0.85 // HSPA / HSPA+ (3G+)
+	case strings.Contains(tech, "umts"):
+		techFactor = 0.55 // UMTS 3G base
+	case tech == "":
+		techFactor = 1.0 // no data — do not penalise
+	default: // GPRS, EDGE, GSM
+		techFactor = 0.20
+	}
+
+	// Signal quality modifier: applied only below 50 %.
+	// Above 50 % the SRT layer handles transient losses without help;
+	// below 50 % a pre-emptive reduction avoids filling the SRT send buffer.
+	var sigFactor float64
+	switch {
+	case s.Quality >= 50:
+		sigFactor = 1.0
+	case s.Quality >= 30:
+		sigFactor = 0.85
+	default: // < 30 %: very poor signal
+		sigFactor = 0.60
+	}
+
+	ceiling := int(float64(maxBitrate) * techFactor * sigFactor)
+	if minFloor := maxBitrate / 5; ceiling < minFloor {
+		ceiling = minFloor // never go below the ABR floor
+	}
+	return ceiling
+}
+
+// BitrateAdvisory calls GetSignalStats and returns BitrateAdvisoryFromStats.
+// When the modem is unavailable, maxBitrate is returned unchanged.
+func BitrateAdvisory(maxBitrate int) int {
+	stats, err := GetSignalStats()
+	if err != nil {
+		return maxBitrate
+	}
+	return BitrateAdvisoryFromStats(maxBitrate, stats)
+}
+
 // Run reads and displays modem data every second until ctx is cancelled.
 func Run(ctx context.Context) {
 	if err := Open(); err != nil {
