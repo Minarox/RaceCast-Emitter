@@ -17,7 +17,6 @@ cameras:
 
   - uid: "HD_USB_Camera_HD_USB_Camera"
     name: "Habitacle"
-    disabled: false
     width: 1920
     height: 1080
     framerate: 30

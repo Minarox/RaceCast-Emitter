@@ -16,10 +16,9 @@ var (
 	mu      sync.Mutex
 	logFile *os.File
 
-	// consoleOut est un *os.File ouvert sur un duplicata de fd 1 créé au démarrage
-	// du programme, avant tout appel GStreamer. Quand le package pipeline redirige
-	// temporairement fd 1 vers /dev/null (pour masquer les messages des drivers
-	// Nvidia), consoleOut continue d'écrire sur le terminal d'origine.
+	// consoleOut is a dup of fd 1 created before any GStreamer call.
+	// It keeps writing to the original terminal even when the pipeline package
+	// temporarily redirects fd 1 to /dev/null to silence Nvidia driver noise.
 	consoleOut *os.File
 
 	infoFn  func(string, ...any)
@@ -29,36 +28,35 @@ var (
 )
 
 func init() {
-	// dup(1) crée un nouveau descripteur pointant vers le même terminal que fd 1.
-	// Ce descripteur n'est pas affecté par dup2(/dev/null, 1) appelé plus tard.
+	// dup(1) creates a new fd pointing to the same terminal as fd 1,
+	// unaffected by later dup2(/dev/null, 1) calls.
 	if fd, err := syscall.Dup(int(os.Stdout.Fd())); err == nil {
-		syscall.CloseOnExec(fd) // ne pas hériter dans les processus fils
+		syscall.CloseOnExec(fd) // do not inherit in child processes
 		consoleOut = os.NewFile(uintptr(fd), "stdout")
 	} else {
 		consoleOut = os.Stdout
 	}
 }
 
-// InitConsole initialise le logger en mode console uniquement (pas de fichier).
-// À utiliser pour les commandes interactives comme --ups.
+// InitConsole initializes the logger in console-only mode (no log file).
 func InitConsole() {
 	setup(nil)
 }
 
-// Init initialise le logger et retourne une fonction de fermeture du fichier.
+// Init initializes the logger and returns a close function.
 func Init() func() {
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
-		log.Fatalf("Impossible de créer le dossier de logs : %v", err)
+		log.Fatalf("failed to create log directory: %v", err)
 	}
 
 	logPath := filepath.Join(logsDir, time.Now().Format("2006-01-02")+".log")
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		log.Fatalf("Impossible d'ouvrir le fichier de log %s : %v", logPath, err)
+		log.Fatalf("failed to open log file %s: %v", logPath, err)
 	}
 
 	setup(f)
-	Info("Logs enregistrés dans %s", logPath)
+	Info("Logging to %s", logPath)
 	return func() { f.Close() }
 }
 

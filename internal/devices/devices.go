@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// udevSerial retourne la valeur de ID_SERIAL pour un nœud de périphérique.
+// udevSerial returns the ID_SERIAL value for a device node.
 func udevSerial(dev string) (string, bool) {
 	out, err := exec.Command("udevadm", "info", "--query=property", "--name="+dev).Output()
 	if err != nil {
@@ -22,9 +22,9 @@ func udevSerial(dev string) (string, bool) {
 	return "", false
 }
 
-// FindVideo retourne le chemin /dev/videoX correspondant à l'UID donné.
+// FindVideo returns the /dev/videoX path matching the given UID.
 func FindVideo(uid string) (string, error) {
-	// Tentative via /dev/v4l/by-id/ (symlinks par identifiant)
+	// Try /dev/v4l/by-id/ symlinks first.
 	const byIDPath = "/dev/v4l/by-id"
 	if entries, err := os.ReadDir(byIDPath); err == nil {
 		for _, e := range entries {
@@ -32,7 +32,7 @@ func FindVideo(uid string) (string, error) {
 			if !strings.Contains(name, uid) {
 				continue
 			}
-			// Ignorer les index secondaires (métadonnées)
+			// Skip secondary indexes (metadata nodes).
 			if strings.Contains(name, "index") && !strings.Contains(name, "index0") {
 				continue
 			}
@@ -47,7 +47,7 @@ func FindVideo(uid string) (string, error) {
 		}
 	}
 
-	// Repli : parcourir /dev/video* avec udevadm
+	// Fallback: scan /dev/video* via udevadm.
 	matches, _ := filepath.Glob("/dev/video*")
 	for _, dev := range matches {
 		if serial, ok := udevSerial(dev); ok && serial == uid {
@@ -55,14 +55,13 @@ func FindVideo(uid string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("périphérique vidéo avec UID %q introuvable", uid)
+	return "", fmt.Errorf("video device with UID %q not found", uid)
 }
 
-// FindALSA retourne la chaîne hw:C,D correspondant à l'UID donné.
+// FindALSA returns the hw:C,D string matching the given UID.
 func FindALSA(uid string) (string, error) {
-	// Tentative via /dev/snd/by-id/ : les symlinks pointent vers controlCX.
-	// On en déduit le numéro de carte, puis on sélectionne le premier nœud
-	// de capture pcmC{X}D0c (device 0 = micro USB).
+	// Try /dev/snd/by-id/ symlinks: they point to controlCX nodes.
+	// Derive the card number, then select the first capture node pcmC{X}D0c.
 	const byIDPath = "/dev/snd/by-id"
 	if entries, err := os.ReadDir(byIDPath); err == nil {
 		for _, e := range entries {
@@ -73,8 +72,7 @@ func FindALSA(uid string) (string, error) {
 			if err != nil {
 				continue
 			}
-			// link ressemble à "../controlC2"
-			base := filepath.Base(link) // "controlC2"
+			base := filepath.Base(link) // e.g. "controlC2"
 			var card int
 			if _, err := fmt.Sscanf(base, "controlC%d", &card); err != nil {
 				continue
@@ -83,15 +81,15 @@ func FindALSA(uid string) (string, error) {
 		}
 	}
 
-	// Repli : parcourir /dev/snd/pcmC*D*c avec udevadm
+	// Fallback: scan /dev/snd/pcmC*D*c via udevadm.
 	matches, _ := filepath.Glob("/dev/snd/pcmC*D*c")
 	for _, dev := range matches {
 		if serial, ok := udevSerial(dev); ok && serial == uid {
 			var card, device int
-			base := filepath.Base(dev) // ex. "pcmC1D0c"
+			base := filepath.Base(dev) // e.g. "pcmC1D0c"
 			fmt.Sscanf(base, "pcmC%dD%dc", &card, &device)
 			return fmt.Sprintf("hw:%d,%d", card, device), nil
 		}
 	}
-	return "", fmt.Errorf("périphérique ALSA avec UID %q introuvable", uid)
+	return "", fmt.Errorf("ALSA device with UID %q not found", uid)
 }

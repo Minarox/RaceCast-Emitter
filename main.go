@@ -11,13 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	lksdk "github.com/livekit/server-sdk-go/v2"
-
 	"racecast-emitter/internal/config"
 	"racecast-emitter/internal/env"
-	"racecast-emitter/internal/livekit"
+	"racecast-emitter/internal/modem"
 	"racecast-emitter/internal/logger"
 	"racecast-emitter/internal/pipeline"
+	"racecast-emitter/internal/telemetry"
 	"racecast-emitter/internal/udev"
 	"racecast-emitter/internal/ups"
 )
@@ -26,19 +25,28 @@ const configFile = "devices.yaml"
 
 func main() {
 	env.Load(".env")
-	upsFlag    := flag.Bool("ups",    false, "Lit et affiche les valeurs de l'UPS en continu (optionnel : intervalle en secondes, défaut 5)")
-	recordFlag := flag.Bool("record", false, "Enregistrement uniquement (sans diffusion LiveKit)")
-	streamFlag := flag.Bool("stream", false, "Diffusion LiveKit uniquement (sans enregistrement)")
+	upsFlag    := flag.Bool("ups",    false, "Continuously read and display UPS values (optional: interval in seconds, default 5)")
+	modemFlag  := flag.Bool("modem",  false, "Continuously read and display modem data (GPS + network)")
+	recordFlag := flag.Bool("record", false, "Record only (no SRT streaming)")
+	streamFlag := flag.Bool("stream", false, "Stream only (no recording)")
 	flag.Parse()
 
 	nSet := 0
-	for _, b := range []bool{*upsFlag, *recordFlag, *streamFlag} {
+	for _, b := range []bool{*upsFlag, *modemFlag, *recordFlag, *streamFlag} {
 		if b {
 			nSet++
 		}
 	}
 	if nSet > 1 {
-		logger.Fatal("Les options --ups, --record et --stream sont mutuellement exclusives")
+		logger.Fatal("--ups, --modem, --record and --stream are mutually exclusive")
+	}
+
+	if *modemFlag {
+		logger.InitConsole()
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		modem.Run(ctx)
+		return
 	}
 
 	if *upsFlag {
@@ -49,7 +57,7 @@ func main() {
 				ms := int64(math.Round(n * 1000))
 				interval = time.Duration(ms) * time.Millisecond
 			} else {
-				logger.Fatal("[ups] Intervalle invalide : %q (nombre >= 0.05 attendu)", args[0])
+				logger.Fatal("[ups] Invalid interval: %q (expected a number >= 0.05)", args[0])
 			}
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -66,13 +74,13 @@ func main() {
 
 	cfg, err := config.Load(configFile)
 	if err != nil {
-		logger.Fatal("Erreur de configuration : %v", err)
+		logger.Fatal("Configuration error: %v", err)
 	}
 
 	cameraSlots := make(map[string]*pipeline.Slot, len(cfg.Cameras))
 	for _, cam := range cfg.Cameras {
 		if cam.Disabled {
-			logger.Info("[camera:%s] Désactivée dans la configuration, ignorée", cam.Name)
+			logger.Info("[camera:%s] Disabled in config, skipping", cam.Name)
 			continue
 		}
 		if doRecord || cam.HasStream() {
@@ -81,48 +89,55 @@ func main() {
 	}
 	micSlots := make(map[string]*pipeline.Slot, len(cfg.Microphones))
 	for _, mic := range cfg.Microphones {
+		if mic.Disabled {
+			logger.Info("[mic:%s] Disabled in config, skipping", mic.Name)
+			continue
+		}
 		if doRecord || mic.HasStream() {
 			micSlots[mic.UID] = &pipeline.Slot{}
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	var wg sync.WaitGroup
 
-	var room *lksdk.Room
-	if doStream {
-		lkCfg, err := livekit.LoadConfig()
-		if err != nil {
-			logger.Warn("[livekit] Configuration incomplete, diffusion désactivée : %v", err)
-		} else {
-			r, err := livekit.Connect(lkCfg)
-			if err != nil {
-				logger.Warn("[livekit] Connexion échouée, diffusion désactivée : %v", err)
-			} else {
-				room = r
-			}
-		}
+	if doStream && os.Getenv("RC_SRT_HOST") == "" {
+		logger.Warn("[srt] RC_SRT_HOST not set -- SRT streaming will be inactive")
 	}
-	if room != nil {
-		// Disconnect appelé explicitement après wg.Wait(), pas en defer,
-		// pour que les tracks disparaissent de LiveKit après l'arrêt complet.
-		defer func() {
-			room.Disconnect()
-			logger.Info("Déconnecté de LiveKit.")
+
+	upsConn   := telemetry.NewConn("telemetry:ups")
+	modemConn := telemetry.NewConn("telemetry:modem")
+	defer upsConn.Close()
+	defer modemConn.Close()
+
+	// Send UPS values to the server every 2 s (when streaming is active).
+	if doStream {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ups.RunStream(ctx, upsConn)
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			modem.RunStream(ctx, modemConn)
 		}()
 	}
 
 	events, err := udev.Listen(ctx)
 	if err != nil {
-		logger.Fatal("Impossible d'ouvrir le socket netlink udev : %v", err)
+		logger.Fatal("Failed to open netlink udev socket: %v", err)
 	}
 
-	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream, Room: room}
+	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream}
 
-	wg.Add(1)
+	// The control goroutine (udev + poll) is NOT tracked in wg.
+	// wg only tracks pipeline goroutines (via activate()).
+	// This prevents wg.Wait() from blocking on a CGo gst_element_get_state call
+	// in StartAll — the control goroutine exits on its own via ctx.Done().
 	go func() {
-		defer wg.Done()
 		pipeline.Poll(ctx, pollOpts, cfg, cameraSlots, micSlots, &wg)
 		for {
 			select {
@@ -152,16 +167,13 @@ func main() {
 		}
 	}()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	logger.Info("Signal %s reçu -- arrêt des pipelines...", sig)
+	<-ctx.Done()
+	logger.Info("Signal received -- stopping pipelines...")
 
-	// Annuler le contexte pour stopper les goroutines de polling et de diffusion.
-	cancel()
+	// Restore default signal behaviour: a second Ctrl+C kills the process
+	// immediately if the graceful shutdown stalls.
+	stop()
 
-	// Envoyer EOS à TOUS les pipelines actifs (enregistrement et diffusion).
-	// Sans EOS, gp.wg.Wait() dans chaque slot ne se termine jamais et wg.Wait() bloque.
 	for _, s := range cameraSlots {
 		s.SendEOS()
 	}
@@ -169,6 +181,13 @@ func main() {
 		s.SendEOS()
 	}
 
+	// Safety: if wg.Wait() doesn't return within 5 s (e.g. StartAll blocked
+	// on gst_element_get_state), force exit. The kernel releases all resources.
+	time.AfterFunc(5*time.Second, func() {
+		logger.Warn("Shutdown timeout exceeded — forcing exit")
+		os.Exit(0)
+	})
+
 	wg.Wait()
-	logger.Info("Tous les pipelines sont arrêtés.")
+	logger.Info("All pipelines stopped.")
 }

@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	lksdk "github.com/livekit/server-sdk-go/v2"
-
 	"racecast-emitter/internal/config"
 	"racecast-emitter/internal/devices"
 	"racecast-emitter/internal/logger"
@@ -24,13 +22,24 @@ func envInt(key string, defaultVal int) int {
 		if v, err := strconv.Atoi(s); err == nil && v > 0 {
 			return v
 		}
-		logger.Warn("Variable d'environnement %s invalide, valeur par defaut : %d", key, defaultVal)
+		logger.Warn("Invalid environment variable %s, using default: %d", key, defaultVal)
 	}
 	return defaultVal
 }
 
 func videoBitrate() int { return envInt("RC_VIDEO_BITRATE", 12_000_000) }
 func audioBitrate() int { return envInt("RC_AUDIO_BITRATE", 192_000) }
+
+// srtPortStart returns the SRT port from RC_SRT_PORT.
+// All streams (cameras and microphones) connect on the same port;
+// the receiver differentiates connections by SRT streamid ("name:source").
+func srtPortStart() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RC_SRT_PORT"))); err == nil && n > 0 {
+		return n
+	}
+	logger.Warn("RC_SRT_PORT not set or invalid — defaulting to 9000")
+	return 9000
+}
 
 func sanitize(name string) string {
 	return strings.NewReplacer(" ", "_", "/", "-").Replace(name)
@@ -48,63 +57,42 @@ func (s *Slot) IsRunning() bool {
 	return s.gst != nil
 }
 
-func (s *Slot) Gst() *GstPipeline {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.gst
-}
-
-func (s *Slot) start(ctx context.Context, label, pipelineStr string, hasAppsink bool, wg *sync.WaitGroup) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ctx.Err() != nil || s.gst != nil {
-		return
-	}
-	gp, err := newGstPipeline(pipelineStr, hasAppsink)
-	if err != nil {
-		logger.Error("[%s] Impossible de créer le pipeline : %v", label, err)
-		return
-	}
-	gp.SetOnError(func() {
-		s.mu.Lock()
-		if s.gst == gp {
-			gp.SetNull()
-			gp.Free()
-			s.gst = nil
-		}
-		s.mu.Unlock()
-		logger.Warn("[%s] Pipeline en erreur -- périphérique déconnecté ?", label)
-	})
-	if err := gp.Start(); err != nil {
-		gp.Free()
-		logger.Error("[%s] Impossible de démarrer le pipeline : %v", label, err)
-		return
-	}
-	s.activate(label, gp, wg)
-}
-
-// activate enregistre un GstPipeline déjà démarré dans le slot et lance la goroutine
-// de surveillance qui appelle SetNull/Free une fois que le pipeline s'est arrêté.
+// activate registers an already-started GstPipeline in the slot and launches
+// a goroutine that signals pipeline stop via wg.Done(), then releases GStreamer
+// resources in the background without blocking the shutdown path.
+// If ctx is already cancelled (e.g. Ctrl+C during StartAll), the pipeline is
+// freed in the background without adding to wg.
 func (s *Slot) activate(label string, gp *GstPipeline, wg *sync.WaitGroup) {
+	// Ctx cancelled during StartAll: don't register in wg.
+	select {
+	case <-gp.ctx.Done():
+		logger.Info("[%s] Context cancelled during startup -- pipeline discarded", label)
+		go func() { gp.SetNull(); gp.Free() }()
+		return
+	default:
+	}
 	s.mu.Lock()
 	s.gst = gp
 	s.mu.Unlock()
-	logger.Info("[%s] Pipeline GStreamer démarré", label)
+	logger.Info("[%s] GStreamer pipeline started", label)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		gp.wg.Wait()
-		// Logger avant SetNull/Free : ces fonctions silencient fd 1+2 pendant la
-		// libération des ressources Nvidia ; si on loggait après, un autre pipeline
-		// simultané en cours de SetNull/Free absorberait ce message dans /dev/null.
-		logger.Info("[%s] Pipeline GStreamer arrêté", label)
+		logger.Info("[%s] GStreamer pipeline stopped", label)
 		s.mu.Lock()
 		if s.gst == gp {
-			gp.SetNull()
-			gp.Free()
 			s.gst = nil
 		}
 		s.mu.Unlock()
+		// SetNull and Free in background: don't block wg.Done().
+		// gst_element_set_state(NULL) may block while srtsink finishes
+		// an in-progress reconnect attempt. The slot is already nil so
+		// a new pipeline can be created immediately.
+		go func() {
+			gp.SetNull()
+			gp.Free()
+		}()
 	}()
 }
 
@@ -114,13 +102,16 @@ func (s *Slot) SendEOS() {
 	s.mu.Unlock()
 	if gp != nil {
 		gp.SendEOS()
+		// Cancel the internal context to unblock watchBus() immediately.
+		// Without this, watchBus() waits for an EOS bus message that srtsink
+		// in reconnect mode never produces, stalling wg.Wait() indefinitely.
+		gp.Cancel()
 	}
 }
 
 type PollOptions struct {
 	Record bool
 	Stream bool
-	Room   *lksdk.Room
 }
 
 func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots, micSlots map[string]*Slot, wg *sync.WaitGroup) {
@@ -128,16 +119,33 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		return
 	}
 
-	// startEntry regroupe tout ce qui est nécessaire pour démarrer un pipeline
-	// et publier son track LiveKit une fois prêt.
+	// SRT port: all streams connect on the same port.
+	// The receiver differentiates connections by SRT streamid.
+	srtPort := srtPortStart()
+	cameraPort := map[string]int{} // uid → SRT port
+	if opts.Stream {
+		for _, cam := range cfg.Cameras {
+			if cam.Disabled || !cam.HasStream() {
+				continue
+			}
+			cameraPort[cam.UID] = srtPort
+		}
+	}
+	micPort := map[string]int{} // uid → SRT port
+	if opts.Stream {
+		for _, mic := range cfg.Microphones {
+			if !mic.HasStream() {
+				continue
+			}
+			micPort[mic.UID] = srtPort
+		}
+	}
+
+	// startEntry regroupe tout ce qui est nécessaire pour démarrer un pipeline.
 	type startEntry struct {
 		label       string
 		pipelineStr string
-		hasAppsink  bool
 		slot        *Slot
-		// publishTrack est appelé après que le pipeline est en PLAYING.
-		// nil si la diffusion n'est pas activée pour ce périphérique.
-		publishTrack func(gp *GstPipeline) error
 	}
 
 	var entries []startEntry
@@ -151,14 +159,14 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		if s == nil || s.IsRunning() {
 			continue
 		}
-		doStream := opts.Stream && opts.Room != nil && cam.HasStream()
+		doStream := opts.Stream && cam.HasStream()
 		if !opts.Record && !doStream {
 			continue
 		}
 		dev, err := devices.FindVideo(cam.UID)
 		if err != nil {
 			if !s.notFound {
-				logger.Warn("[camera:%s] Introuvable (UID: %s), en attente...", cam.Name, cam.UID)
+				logger.Warn("[camera:%s] Not found (UID: %s), waiting...", cam.Name, cam.UID)
 				s.notFound = true
 			}
 			continue
@@ -169,50 +177,45 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			now := time.Now()
 			dir := filepath.Join(recordsDir, now.Format("2006-01-02"))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
-				logger.Error("[camera:%s] Impossible de créer le répertoire : %v", cam.Name, err)
+				logger.Error("[camera:%s] Failed to create directory: %v", cam.Name, err)
 				continue
 			}
 			outputPath = filepath.Join(dir, fmt.Sprintf("%s_%s_video.mp4", now.Format("15-04-05"), sanitize(cam.Name)))
 		}
 		label := "camera:" + sanitize(cam.Name)
+		port := cameraPort[cam.UID]
 		switch {
 		case opts.Record && doStream:
-			logger.Info("[%s] %s -> enregistrement + diffusion AV1", label, dev)
+			logger.Info("[%s] %s -> record + AV1/SRT stream (port %d)", label, dev, port)
 		case opts.Record:
-			logger.Info("[%s] %s -> enregistrement H.264", label, dev)
+			logger.Info("[%s] %s -> H.264 record", label, dev)
 		default:
-			logger.Info("[%s] %s -> diffusion AV1", label, dev)
-		}
-		var pub func(*GstPipeline) error
-		if doStream {
-			camCopy := cam
-			pub = func(gp *GstPipeline) error {
-				return publishVideoTrack(ctx, camCopy, gp, opts.Room, wg)
-			}
+			logger.Info("[%s] %s -> AV1/SRT stream (port %d)", label, dev, port)
 		}
 		entries = append(entries, startEntry{
-			label:        label,
-			pipelineStr:  BuildVideoStr(cam, dev, outputPath, doStream),
-			hasAppsink:   doStream,
-			slot:         s,
-			publishTrack: pub,
+			label:       label,
+			pipelineStr: BuildVideoStr(cam, dev, outputPath, doStream, port),
+			slot:        s,
 		})
 	}
 
 	for i := range cfg.Microphones {
 		mic := cfg.Microphones[i]
+		if mic.Disabled {
+			continue
+		}
 		s := micSlots[mic.UID]
 		if s == nil || s.IsRunning() {
 			continue
 		}
-		doStream := opts.Stream && opts.Room != nil && mic.HasStream()
+		doStream := opts.Stream && mic.HasStream()
 		if !opts.Record && !doStream {
 			continue
 		}
 		alsaDev, err := devices.FindALSA(mic.UID)
 		if err != nil {
 			if !s.notFound {
-				logger.Warn("[mic:%s] Introuvable (UID: %s), en attente...", mic.Name, mic.UID)
+				logger.Warn("[mic:%s] Not found (UID: %s), waiting...", mic.Name, mic.UID)
 				s.notFound = true
 			}
 			continue
@@ -223,33 +226,25 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			now := time.Now()
 			dir := filepath.Join(recordsDir, now.Format("2006-01-02"))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
-				logger.Error("[mic:%s] Impossible de créer le répertoire : %v", mic.Name, err)
+				logger.Error("[mic:%s] Failed to create directory: %v", mic.Name, err)
 				continue
 			}
 			outputPath = filepath.Join(dir, fmt.Sprintf("%s_%s_audio.mp4", now.Format("15-04-05"), sanitize(mic.Name)))
 		}
 		label := "mic:" + sanitize(mic.Name)
+		port := micPort[mic.UID]
 		switch {
 		case opts.Record && doStream:
-			logger.Info("[%s] %s -> enregistrement + diffusion Opus", label, alsaDev)
+			logger.Info("[%s] %s -> record + Opus/SRT stream (port %d)", label, alsaDev, port)
 		case opts.Record:
-			logger.Info("[%s] %s -> enregistrement AAC", label, alsaDev)
+			logger.Info("[%s] %s -> AAC record", label, alsaDev)
 		default:
-			logger.Info("[%s] %s -> diffusion Opus", label, alsaDev)
-		}
-		var pub func(*GstPipeline) error
-		if doStream {
-			micCopy := mic
-			pub = func(gp *GstPipeline) error {
-				return publishAudioTrack(ctx, micCopy, gp, opts.Room, wg)
-			}
+			logger.Info("[%s] %s -> Opus/SRT stream (port %d)", label, alsaDev, port)
 		}
 		entries = append(entries, startEntry{
-			label:        label,
-			pipelineStr:  BuildAudioStr(mic, alsaDev, outputPath, doStream),
-			hasAppsink:   doStream,
-			slot:         s,
-			publishTrack: pub,
+			label:       label,
+			pipelineStr: BuildAudioStr(mic, alsaDev, outputPath, doStream, port),
+			slot:        s,
 		})
 	}
 
@@ -257,8 +252,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		return
 	}
 
-	// Phase 1 : créer tous les pipelines GStreamer (gst_parse_launch).
-	// Cette étape est rapide et n'émet pas de messages Nvidia — pas de silencing requis.
+	// Phase 1: create all GStreamer pipelines (gst_parse_launch).
 	type prepEntry struct {
 		startEntry
 		gp *GstPipeline
@@ -273,9 +267,9 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		if !ok {
 			continue
 		}
-		gp, err := newGstPipeline(e.pipelineStr, e.hasAppsink)
+		gp, err := newGstPipeline(ctx, e.pipelineStr)
 		if err != nil {
-			logger.Error("[%s] Impossible de créer le pipeline : %v", e.label, err)
+			logger.Error("[%s] Failed to create pipeline: %v", e.label, err)
 			continue
 		}
 		gp.SetOnError(func() {
@@ -286,7 +280,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 				s.gst = nil
 			}
 			s.mu.Unlock()
-			logger.Warn("[%s] Pipeline en erreur -- périphérique déconnecté ?", e.label)
+			logger.Warn("[%s] Pipeline error -- device disconnected?", e.label)
 		})
 		preps = append(preps, prepEntry{e, gp})
 	}
@@ -295,36 +289,20 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		return
 	}
 
-	// Phase 2 : démarrer tous les pipelines en parallèle sous un silencing global unique.
-	// Chaque gst_element_get_state (bloquant ~1s) s'exécute dans sa propre goroutine ;
-	// un seul dup2(/dev/null) couvre l'ensemble → pas de race sur fd 1.
+	// Phase 2: start all pipelines in parallel under a single global silencing window.
 	gpList := make([]*GstPipeline, len(preps))
 	for i, pe := range preps {
 		gpList[i] = pe.gp
 	}
 	errs := StartAll(gpList)
 
-	// Phase 3 : activer les slots et publier les tracks LiveKit en parallèle.
-	var pubWg sync.WaitGroup
+	// Phase 3: activate slots.
 	for i, pe := range preps {
 		if errs[i] != nil {
-			logger.Error("[%s] Impossible de démarrer le pipeline : %v", pe.label, errs[i])
+			logger.Error("[%s] Failed to start pipeline: %v", pe.label, errs[i])
 			pe.gp.Free()
 			continue
 		}
 		pe.slot.activate(pe.label, pe.gp, wg)
-		if pe.publishTrack != nil {
-			pe := pe
-			pubWg.Add(1)
-			go func() {
-				defer pubWg.Done()
-				if gp := pe.slot.Gst(); gp != nil {
-					if err := pe.publishTrack(gp); err != nil {
-						logger.Warn("[%s] Impossible de publier le track : %v", pe.label, err)
-					}
-				}
-			}()
-		}
 	}
-	pubWg.Wait()
 }

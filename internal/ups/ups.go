@@ -50,14 +50,14 @@ var (
 	device *i2c.I2C
 )
 
-// envUint8 lit une variable d'environnement en hexadécimal ou décimal.
+// envUint8 reads an environment variable as hex or decimal.
 func envUint8(key string, def uint8) uint8 {
 	if s := os.Getenv(key); s != "" {
 		v, err := strconv.ParseUint(s, 0, 8)
 		if err == nil {
 			return uint8(v)
 		}
-		logger.Warn("[ups] Variable %s invalide, valeur par défaut utilisée : 0x%02X", key, def)
+		logger.Warn("[ups] Invalid variable %s, using default: 0x%02X", key, def)
 	}
 	return def
 }
@@ -68,7 +68,7 @@ func envInt(key string, def int) int {
 		if err == nil && v >= 0 {
 			return v
 		}
-		logger.Warn("[ups] Variable %s invalide, valeur par défaut utilisée : %d", key, def)
+		logger.Warn("[ups] Invalid variable %s, using default: %d", key, def)
 	}
 	return def
 }
@@ -77,9 +77,8 @@ func round2(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
-// Open ouvre la connexion I2C vers l'UPS et initialise la calibration.
-// L'adresse et le bus sont lus depuis RC_UPS_ADDR et RC_UPS_BUS,
-// avec respectivement 0x40 et 7 comme valeurs par défaut.
+// Open opens the I2C connection to the UPS and calibrates it.
+// Address and bus are read from RC_UPS_ADDR and RC_UPS_BUS (defaults: 0x40, 7).
 func Open() error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -96,16 +95,16 @@ func Open() error {
 		return err
 	}
 
-	// Silencer les logs de debug de la bibliothèque go-i2c
+	// Silence debug logs from the go-i2c library.
 	_ = golog.ChangePackageLogLevel("i2c", golog.PanicLevel)
 
 	device = conn
-	logger.Info("[ups] Connecté (adresse 0x%02X, bus %d)", addr, bus)
+	logger.Info("[ups] Connected (address 0x%02X, bus %d)", addr, bus)
 	calibrate()
 	return nil
 }
 
-// Close ferme la connexion I2C.
+// Close closes the I2C connection.
 func Close() {
 	mu.Lock()
 	defer mu.Unlock()
@@ -125,7 +124,7 @@ func read(reg byte) uint16 {
 	}
 	val, err := device.ReadRegU16BE(reg)
 	if err != nil {
-		logger.Error("[ups] Lecture registre 0x%02X : %v", reg, err)
+		logger.Error("[ups] Read register 0x%02X: %v", reg, err)
 		return 0
 	}
 	return val
@@ -139,14 +138,14 @@ func write(reg byte, value uint16) {
 		return
 	}
 	if err := device.WriteRegU16BE(reg, value); err != nil {
-		logger.Error("[ups] Écriture registre 0x%02X : %v", reg, err)
+		logger.Error("[ups] Write register 0x%02X: %v", reg, err)
 	}
 }
 
 func calibrate() {
-	// Appel interne — mu déjà verrouillé, on écrit directement
+	// Internal call — mu already held, write directly.
 	if err := device.WriteRegU16BE(regCalibration, calValue); err != nil {
-		logger.Error("[ups] Calibration : %v", err)
+		logger.Error("[ups] Calibration: %v", err)
 		return
 	}
 
@@ -157,11 +156,11 @@ func calibrate() {
 		modeContinuous
 
 	if err := device.WriteRegU16BE(regConfig, uint16(cfg)); err != nil {
-		logger.Error("[ups] Configuration : %v", err)
+		logger.Error("[ups] Configuration: %v", err)
 	}
 }
 
-// Data contient les mesures lues depuis l'UPS.
+// Data holds measurements read from the UPS.
 type Data struct {
 	Voltage    float64 // V
 	Current    float64 // A
@@ -186,15 +185,14 @@ func Read() Data {
 	}
 }
 
-// Run lit et logue les valeurs de l'UPS à intervalle régulier jusqu'à
-// ce que le contexte soit annulé.
+// Run reads and logs UPS values at the given interval until ctx is cancelled.
 func Run(ctx context.Context, interval time.Duration) {
 	if err := Open(); err != nil {
-		logger.Fatal("[ups] Impossible d'ouvrir la connexion I2C : %v", err)
+		logger.Fatal("[ups] Failed to open I2C connection: %v", err)
 	}
 	defer Close()
 
-	logger.Info("[ups] Lecture toutes les %s (Ctrl+C pour arrêter)", interval)
+	logger.Info("[ups] Reading every %s (Ctrl+C to stop)", interval)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -202,7 +200,7 @@ func Run(ctx context.Context, interval time.Duration) {
 	first := true
 	for {
 		if !first {
-			// Remonte d'une ligne et l'efface pour écraser la valeur précédente
+			// Move up one line and erase it to overwrite the previous value.
 			fmt.Fprint(os.Stdout, "\033[1A\033[2K")
 		}
 		d := Read()

@@ -6,14 +6,12 @@ import (
 	"strings"
 )
 
-// Load lit un fichier .env et définit les variables d'environnement
-// pour celles qui ne sont pas déjà définies dans l'environnement du processus.
-// Les lignes vides et commençant par # sont ignorées.
-// Silencieux si le fichier est absent.
+// Load reads a .env file and sets environment variables not already defined.
+// Empty lines and lines starting with # are ignored. Silent if the file is absent.
 func Load(path string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return // fichier absent — pas d'erreur
+		return
 	}
 	defer f.Close()
 
@@ -29,7 +27,6 @@ func Load(path string) {
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
-		// Ne pas écraser une variable déjà définie dans l'environnement
 		if os.Getenv(key) == "" {
 			os.Setenv(key, value)
 		}
