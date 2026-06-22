@@ -25,7 +25,8 @@ package pipeline
 // // makes srt_recvmsg return after 2 s of inactivity so the goroutine can
 // // check for context cancellation without blocking indefinitely.
 // static SRTSOCKET srt_open_caller(const char *host, int port,
-//                                  const char *streamid, int latency_ms) {
+//                                  const char *streamid, int latency_ms,
+//                                  const char *passphrase) {
 //     srt_startup();
 //     SRTSOCKET s = srt_create_socket();
 //     if (s == SRT_INVALID_SOCK) return SRT_INVALID_SOCK;
@@ -33,6 +34,15 @@ package pipeline
 //     int lat = latency_ms;
 //     srt_setsockflag(s, SRTO_RCVLATENCY, &lat, sizeof(lat));
 //     srt_setsockflag(s, SRTO_STREAMID, streamid, (int)strlen(streamid));
+//     // DSCP AF41 (0x88 = 136): marks feedback packets as video-related traffic.
+//     int tos = 0x88;
+//     srt_setsockflag(s, SRTO_IPTOS, &tos, sizeof(tos));
+//     // Passphrase authentication: reject connections with wrong key (AES-256).
+//     if (passphrase && strlen(passphrase) >= 10) {
+//         srt_setsockflag(s, SRTO_PASSPHRASE, passphrase, (int)strlen(passphrase));
+//         int pbkeylen = 32;
+//         srt_setsockflag(s, SRTO_PBKEYLEN, &pbkeylen, sizeof(pbkeylen));
+//     }
 //     int conntimeo = 5000;
 //     srt_setsockflag(s, SRTO_CONNTIMEO, &conntimeo, sizeof(conntimeo));
 //     int rcvtimeo = 2000;
@@ -78,6 +88,7 @@ import (
 	"unsafe"
 
 	"racecast-emitter/internal/logger"
+	"racecast-emitter/internal/modem"
 )
 
 // ABR thresholds and parameters.
@@ -126,6 +137,7 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 	stableCount := 0
 	var prevSent int64
 	var prevLost int
+	prevEffectiveMax := maxBitrate // tracks last logged modem ceiling
 
 	for {
 		select {
@@ -242,9 +254,11 @@ func (p *GstPipeline) idrLoop(encoderName, cameraName, host string, port int) {
 
 		cHost := C.CString(host)
 		cStreamID := C.CString(streamID)
-		sock := C.srt_open_caller(cHost, C.int(port), cStreamID, C.int(fbLatencyMS))
+		cPassphrase := C.CString(strings.TrimSpace(os.Getenv("RC_SRT_PASSPHRASE")))
+		sock := C.srt_open_caller(cHost, C.int(port), cStreamID, C.int(fbLatencyMS), cPassphrase)
 		C.free(unsafe.Pointer(cHost))
 		C.free(unsafe.Pointer(cStreamID))
+		C.free(unsafe.Pointer(cPassphrase))
 
 		if C.srt_fb_invalid(sock) != 0 {
 			logger.Warn("[idr:%s] Connection to %s:%d failed — retrying in %s",

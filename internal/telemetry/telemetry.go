@@ -12,7 +12,8 @@ package telemetry
 // #include <string.h>
 // #include <stdlib.h>
 //
-// static SRTSOCKET telem_dial(const char *host, int port, const char *streamid, int latency) {
+// static SRTSOCKET telem_dial(const char *host, int port, const char *streamid,
+//                             int latency, const char *passphrase) {
 //     srt_startup();
 //     SRTSOCKET s = srt_create_socket();
 //     if (s == SRT_INVALID_SOCK) return SRT_INVALID_SOCK;
@@ -21,6 +22,17 @@ package telemetry
 //     srt_setsockflag(s, SRTO_LATENCY, &lat, sizeof(lat));
 //
 //     srt_setsockflag(s, SRTO_STREAMID, streamid, (int)strlen(streamid));
+//
+//     // DSCP AF41 (0x88): marks telemetry UDP packets as video-related traffic.
+//     int tos = 0x88;
+//     srt_setsockflag(s, SRTO_IPTOS, &tos, sizeof(tos));
+//
+//     // Passphrase authentication (AES-256).
+//     if (passphrase && strlen(passphrase) >= 10) {
+//         srt_setsockflag(s, SRTO_PASSPHRASE, passphrase, (int)strlen(passphrase));
+//         int pbkeylen = 32;
+//         srt_setsockflag(s, SRTO_PBKEYLEN, &pbkeylen, sizeof(pbkeylen));
+//     }
 //
 //     struct addrinfo hints, *res = NULL;
 //     memset(&hints, 0, sizeof(hints));
@@ -58,6 +70,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -66,13 +79,14 @@ import (
 
 // Conn represents an SRT telemetry connection identified by a streamid.
 type Conn struct {
-	streamID string
-	host     string
-	port     int
-	latency  int
-	mu       sync.Mutex
-	sock     C.SRTSOCKET
-	dialed   bool
+	streamID   string
+	host       string
+	port       int
+	latency    int
+	passphrase string
+	mu         sync.Mutex
+	sock       C.SRTSOCKET
+	dialed     bool
 }
 
 // NewConn creates a Conn for the given streamid.
@@ -80,10 +94,11 @@ type Conn struct {
 // If RC_SRT_HOST is not set, Send is a no-op.
 func NewConn(streamID string) *Conn {
 	return &Conn{
-		streamID: streamID,
-		host:     os.Getenv("RC_SRT_HOST"),
-		port:     envInt("RC_SRT_PORT", 9000),
-		latency:  envInt("RC_SRT_LATENCY", 2000),
+		streamID:   streamID,
+		host:       os.Getenv("RC_SRT_HOST"),
+		port:       envInt("RC_SRT_PORT", 9000),
+		latency:    envInt("RC_SRT_LATENCY", 800),
+		passphrase: strings.TrimSpace(os.Getenv("RC_SRT_PASSPHRASE")),
 	}
 }
 
@@ -101,9 +116,11 @@ func (c *Conn) Send(data []byte) error {
 	if !c.dialed {
 		cHost := C.CString(c.host)
 		cSID := C.CString(c.streamID)
-		sock := C.telem_dial(cHost, C.int(c.port), cSID, C.int(c.latency))
+		cPass := C.CString(c.passphrase)
+		sock := C.telem_dial(cHost, C.int(c.port), cSID, C.int(c.latency), cPass)
 		C.free(unsafe.Pointer(cHost))
 		C.free(unsafe.Pointer(cSID))
+		C.free(unsafe.Pointer(cPass))
 		if C.telem_invalid(sock) != 0 {
 			return fmt.Errorf("SRT connection failed to %s:%d (streamid=%s)", c.host, c.port, c.streamID)
 		}

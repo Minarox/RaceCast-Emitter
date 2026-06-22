@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -28,9 +29,16 @@ func flipMethod(vertical, horizontal bool) int {
 // the receiver reads it from SRTO_STREAMID to create LiveKit tracks automatically.
 func srtCallerURI(port int, name, source string) string {
 	host := os.Getenv("RC_SRT_HOST")
-	latency := envInt("RC_SRT_LATENCY", 2000)
+	latency := envInt("RC_SRT_LATENCY", 800)
 	streamID := name + ":" + source
-	return fmt.Sprintf("srt://%s:%d?streamid=%s&latency=%d&mode=caller", host, port, streamID, latency)
+	// iptos=136 = DSCP AF41 (0x88): marks UDP packets as video streaming traffic
+	// so intermediate routers/LTE schedulers can apply QoS prioritisation.
+	uri := fmt.Sprintf("srt://%s:%d?streamid=%s&latency=%d&mode=caller&iptos=136", host, port, streamID, latency)
+	if p := strings.TrimSpace(os.Getenv("RC_SRT_PASSPHRASE")); p != "" {
+		// pbkeylen=32 → AES-256 session key derived from the passphrase.
+		uri += "&passphrase=" + url.QueryEscape(p) + "&pbkeylen=32"
+	}
+	return uri
 }
 
 // BuildVideoStr builds the GStreamer pipeline description for a camera.
@@ -90,7 +98,7 @@ func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srt
 			return fmt.Sprintf(
 				"nvvidconv ! "+
 					"video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12 ! "+
-					"nvv4l2av1enc name=avenc bitrate=%d insert-seq-hdr=true ! "+
+					"nvv4l2av1enc name=avenc control-rate=0 bitrate=%d insert-seq-hdr=true ! "+
 					"av1parse ! video/x-av1,stream-format=obu-stream",
 				cam.StreamWidth(), cam.StreamHeight(), cam.StreamFramerate(),
 				cam.StreamBitrate(),
@@ -99,7 +107,7 @@ func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srt
 		return fmt.Sprintf(
 			"nvvidconv ! "+
 				"video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12 ! "+
-				"nvv4l2av1enc name=avenc bitrate=%d idrinterval=%d insert-seq-hdr=true ! "+
+				"nvv4l2av1enc name=avenc control-rate=0 bitrate=%d idrinterval=%d insert-seq-hdr=true ! "+
 				"av1parse ! video/x-av1,stream-format=obu-stream",
 			cam.StreamWidth(), cam.StreamHeight(), cam.StreamFramerate(),
 			cam.StreamBitrate(), cam.StreamFramerate()/2,
