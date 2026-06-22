@@ -19,7 +19,7 @@ const recordsDir = "records"
 
 func envInt(key string, defaultVal int) int {
 	if s := os.Getenv(key); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+		if v, err := strconv.Atoi(s); err == nil && v >= 0 {
 			return v
 		}
 		logger.Warn("Invalid environment variable %s, using default: %d", key, defaultVal)
