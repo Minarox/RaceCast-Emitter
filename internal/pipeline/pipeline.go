@@ -30,6 +30,10 @@ func envInt(key string, defaultVal int) int {
 func videoBitrate() int { return envInt("RC_VIDEO_BITRATE", 12_000_000) }
 func audioBitrate() int { return envInt("RC_AUDIO_BITRATE", 192_000) }
 
+// intraRefreshPeriod returns the configured intra-refresh period in frames.
+// Returns 0 when RC_VIDEO_INTRA_REFRESH is unset or zero (feature disabled).
+func intraRefreshPeriod() int { return envInt("RC_VIDEO_INTRA_REFRESH", 0) }
+
 // srtPortStart returns the SRT port from RC_SRT_PORT.
 // All streams (cameras and microphones) connect on the same port;
 // the receiver differentiates connections by SRT streamid ("name:source").
@@ -143,9 +147,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 
 	// startEntry regroupe tout ce qui est nécessaire pour démarrer un pipeline.
 	type startEntry struct {
-		label       string
-		pipelineStr string
-		slot        *Slot
+		label        string
+		pipelineStr  string
+		slot         *Slot
+		feedbackName string // camera name for feedback SRT streamid (empty if feedback disabled)
+		maxBitrate   int    // nominal stream bitrate (bps) used as ABR upper bound
 	}
 
 	var entries []startEntry
@@ -192,10 +198,16 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		default:
 			logger.Info("[%s] %s -> AV1/SRT stream (port %d)", label, dev, port)
 		}
+		fbName := ""
+		if doStream {
+			fbName = sanitize(cam.Name)
+		}
 		entries = append(entries, startEntry{
-			label:       label,
-			pipelineStr: BuildVideoStr(cam, dev, outputPath, doStream, port),
-			slot:        s,
+			label:        label,
+			pipelineStr:  BuildVideoStr(cam, dev, outputPath, doStream, port),
+			slot:         s,
+			feedbackName: fbName,
+			maxBitrate:   cam.StreamBitrate(),
 		})
 	}
 
@@ -296,7 +308,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 	}
 	errs := StartAll(gpList)
 
-	// Phase 3: activate slots.
+	// Phase 3: activate slots and start quality-enhancement goroutines.
 	for i, pe := range preps {
 		if errs[i] != nil {
 			logger.Error("[%s] Failed to start pipeline: %v", pe.label, errs[i])
@@ -304,5 +316,18 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			continue
 		}
 		pe.slot.activate(pe.label, pe.gp, wg)
+		if pe.feedbackName == "" {
+			continue
+		}
+		// Intra-refresh: best-effort property set on the AV1 encoder after startup.
+		if period := intraRefreshPeriod(); period > 0 {
+			pe.gp.TrySetIntraRefresh("avenc", period)
+			logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
+		}
+		// Local ABR: reads srtsink statistics directly — no network round-trip.
+		minBR := pe.maxBitrate / 5
+		pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
+		// IDR on demand: lightweight SRT connection for receiver decode-error signals.
+		pe.gp.RunFeedback("avenc", pe.feedbackName)
 	}
 }

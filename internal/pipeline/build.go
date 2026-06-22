@@ -80,13 +80,26 @@ func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srt
 	}
 
 	// Stream AV1 encoder (reduced resolution/bitrate from stream: config).
+	// name=avenc: allows runtime bitrate/IDR control via g_object_set (SetBitrate, ForceIDR).
 	// insert-seq-hdr=true: each IDR embeds the AV1 sequence header → instant reconnect.
 	// av1parse align=tu: each buffer = one temporal unit = one complete frame.
 	streamEncoder := func() string {
+		if intraRefreshPeriod() > 0 {
+			// Intra-refresh mode: periodic IDR omitted; TrySetIntraRefresh applies
+			// EnableIntraRefresh via g_object_set after pipeline creation.
+			return fmt.Sprintf(
+				"nvvidconv ! "+
+					"video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12 ! "+
+					"nvv4l2av1enc name=avenc bitrate=%d insert-seq-hdr=true ! "+
+					"av1parse ! video/x-av1,stream-format=obu-stream",
+				cam.StreamWidth(), cam.StreamHeight(), cam.StreamFramerate(),
+				cam.StreamBitrate(),
+			)
+		}
 		return fmt.Sprintf(
 			"nvvidconv ! "+
 				"video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12 ! "+
-				"nvv4l2av1enc bitrate=%d idrinterval=%d insert-seq-hdr=true ! "+
+				"nvv4l2av1enc name=avenc bitrate=%d idrinterval=%d insert-seq-hdr=true ! "+
 				"av1parse ! video/x-av1,stream-format=obu-stream",
 			cam.StreamWidth(), cam.StreamHeight(), cam.StreamFramerate(),
 			cam.StreamBitrate(), cam.StreamFramerate()/2,
@@ -95,7 +108,7 @@ func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srt
 
 	// SRT sink: sends the AV1 OBU stream to the server in caller mode.
 	srtSink := func() string {
-		return fmt.Sprintf("srtsink uri=%q sync=false", srtCallerURI(srtPort, cam.Name, "camera"))
+		return fmt.Sprintf("srtsink name=srtsink uri=%q sync=false", srtCallerURI(srtPort, cam.Name, "camera"))
 	}
 
 	switch {

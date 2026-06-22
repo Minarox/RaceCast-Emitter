@@ -87,6 +87,55 @@ package pipeline
 // static void send_eos(GstElement *pipeline) {
 //     gst_element_send_event(pipeline, gst_event_new_eos());
 // }
+//
+// // set_encoder_bitrate sets the bitrate (bps) on a named encoder element.
+// static void set_encoder_bitrate(GstElement *pipeline, const char *name, guint bitrate) {
+//     GstElement *enc = gst_bin_get_by_name(GST_BIN(pipeline), name);
+//     if (!enc) return;
+//     g_object_set(enc, "bitrate", bitrate, NULL);
+//     gst_object_unref(enc);
+// }
+//
+// // force_idr requests an immediate IDR frame from a named encoder element.
+// static void force_idr(GstElement *pipeline, const char *name) {
+//     GstElement *enc = gst_bin_get_by_name(GST_BIN(pipeline), name);
+//     if (!enc) return;
+//     gboolean v = TRUE;
+//     g_object_set(enc, "force-IDR", v, NULL);
+//     gst_object_unref(enc);
+// }
+//
+// // try_set_intra_refresh attempts to enable intra-refresh on a named encoder.
+// // Silently ignored if the encoder does not support the property.
+// static void try_set_intra_refresh(GstElement *pipeline, const char *name, guint period) {
+//     GstElement *enc = gst_bin_get_by_name(GST_BIN(pipeline), name);
+//     if (!enc) return;
+//     g_object_set(enc, "EnableIntraRefresh", (gboolean)TRUE, NULL);
+//     if (period > 0)
+//         g_object_set(enc, "intra-refresh-period", period, NULL);
+//     gst_object_unref(enc);
+// }
+//
+// // get_srtsink_stats reads cumulative SRT statistics from a named srtsink element
+// // via its "stats" GstStructure property. All counts are cumulative since the
+// // connection was established; the caller computes interval deltas.
+// static void get_srtsink_stats(GstElement *pipeline, const char *name,
+//                                double *rtt_ms, double *bandwidth_mbps,
+//                                gint64 *pkt_sent_total, gint *pkt_loss_total) {
+//     *rtt_ms = 0; *bandwidth_mbps = 0; *pkt_sent_total = 0; *pkt_loss_total = 0;
+//     GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), name);
+//     if (!sink) return;
+//     GstStructure *stats = NULL;
+//     g_object_get(sink, "stats", &stats, NULL);
+//     if (stats) {
+//         gst_structure_get_double(stats, "rtt-ms",         rtt_ms);
+//         gst_structure_get_double(stats, "bandwidth-mbps", bandwidth_mbps);
+//         gst_structure_get_int64 (stats, "packets-sent-total",      pkt_sent_total);
+//         gst_structure_get_int   (stats, "packets-sent-loss-total", pkt_loss_total);
+//         gst_structure_free(stats);
+//     }
+//     gst_object_unref(sink);
+// }
 import "C"
 
 import (
@@ -323,4 +372,57 @@ func (p *GstPipeline) watchBus() {
 			return
 		}
 	}
+}
+
+// SetBitrate dynamically changes the AV1 encoder bitrate (bps).
+// Safe to call while the pipeline is in PLAYING state.
+func (p *GstPipeline) SetBitrate(encoderName string, bitrate int) {
+	cName := C.CString(encoderName)
+	defer C.free(unsafe.Pointer(cName))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pipeline != nil && p.running {
+		C.set_encoder_bitrate(p.pipeline, cName, C.guint(bitrate))
+	}
+}
+
+// ForceIDR requests an immediate IDR frame from the named encoder.
+func (p *GstPipeline) ForceIDR(encoderName string) {
+	cName := C.CString(encoderName)
+	defer C.free(unsafe.Pointer(cName))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pipeline != nil && p.running {
+		C.force_idr(p.pipeline, cName)
+	}
+}
+
+// TrySetIntraRefresh attempts to enable intra-refresh on the named encoder.
+// Best-effort: silently ignored if the encoder does not support the properties.
+func (p *GstPipeline) TrySetIntraRefresh(encoderName string, period int) {
+	cName := C.CString(encoderName)
+	defer C.free(unsafe.Pointer(cName))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pipeline != nil {
+		C.try_set_intra_refresh(p.pipeline, cName, C.guint(period))
+	}
+}
+
+// GetSRTSinkStats reads cumulative SRT statistics from the named srtsink element.
+// Returns instantaneous RTT (ms) and bandwidth (Mbps) alongside cumulative
+// packet-sent and packet-loss totals for interval-delta computation.
+func (p *GstPipeline) GetSRTSinkStats(sinkName string) (rttMS, bandwidthMbps float64, pktSentTotal int64, pktLossTotal int) {
+	cName := C.CString(sinkName)
+	defer C.free(unsafe.Pointer(cName))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pipeline == nil || !p.running {
+		return
+	}
+	var rtt, bw C.double
+	var sent C.gint64
+	var lost C.gint
+	C.get_srtsink_stats(p.pipeline, cName, &rtt, &bw, &sent, &lost)
+	return float64(rtt), float64(bw), int64(sent), int(lost)
 }
