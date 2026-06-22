@@ -113,6 +113,17 @@ func (s *Slot) SendEOS() {
 	}
 }
 
+// ForceIDR forces an immediate IDR frame on the running pipeline's AV1 encoder.
+// No-op if the pipeline is not currently running.
+func (s *Slot) ForceIDR(encoderName string) {
+	s.mu.Lock()
+	gp := s.gst
+	s.mu.Unlock()
+	if gp != nil {
+		gp.ForceIDR(encoderName)
+	}
+}
+
 type PollOptions struct {
 	Record bool
 	Stream bool
@@ -147,11 +158,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 
 	// startEntry regroupe tout ce qui est nécessaire pour démarrer un pipeline.
 	type startEntry struct {
-		label        string
-		pipelineStr  string
-		slot         *Slot
-		feedbackName string // camera name for feedback SRT streamid (empty if feedback disabled)
-		maxBitrate   int    // nominal stream bitrate (bps) used as ABR upper bound
+		label       string
+		pipelineStr string
+		slot        *Slot
+		maxBitrate  int  // 0 for record-only or audio entries
+		isStreaming bool // true when the entry includes SRT streaming
 	}
 
 	var entries []startEntry
@@ -198,16 +209,12 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		default:
 			logger.Info("[%s] %s -> AV1/SRT stream (port %d)", label, dev, port)
 		}
-		fbName := ""
-		if doStream {
-			fbName = sanitize(cam.Name)
-		}
 		entries = append(entries, startEntry{
-			label:        label,
-			pipelineStr:  BuildVideoStr(cam, dev, outputPath, doStream, port),
-			slot:         s,
-			feedbackName: fbName,
-			maxBitrate:   cam.StreamBitrate(),
+			label:       label,
+			pipelineStr: BuildVideoStr(cam, dev, outputPath, doStream, port),
+			slot:        s,
+			maxBitrate:  cam.StreamBitrate(),
+			isStreaming: doStream,
 		})
 	}
 
@@ -316,7 +323,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			continue
 		}
 		pe.slot.activate(pe.label, pe.gp, wg)
-		if pe.feedbackName == "" {
+		if !pe.isStreaming {
 			continue
 		}
 		// Intra-refresh: best-effort property set on the AV1 encoder after startup.
@@ -327,7 +334,5 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		// Local ABR: reads srtsink statistics directly — no network round-trip.
 		minBR := pe.maxBitrate / 5
 		pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
-		// IDR on demand: lightweight SRT connection for receiver decode-error signals.
-		pe.gp.RunFeedback("avenc", pe.feedbackName)
 	}
 }

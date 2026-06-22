@@ -1,9 +1,10 @@
 package telemetry
 
-// telemetry.go manages SRT telemetry connections to the receiver.
-// Each Conn corresponds to a distinct SRT streamid, allowing the receiver
-// to route streams without parsing data (e.g. "telemetry:ups", "telemetry:modem").
-// The connection is established lazily and re-established after each error.
+// telemetry.go manages the single bidirectional SRT telemetry connection.
+// The emitter sends telemetry envelopes (UPS, modem/GPS) to the receiver,
+// and receives IDR request signals back from the receiver on the same socket.
+// Each envelope carries a "type" field so the receiver can route without
+// needing separate SRT streamids.
 
 // #cgo pkg-config: srt
 // #include <srt/srt.h>
@@ -20,12 +21,16 @@ package telemetry
 //
 //     int lat = latency;
 //     srt_setsockflag(s, SRTO_LATENCY, &lat, sizeof(lat));
-//
 //     srt_setsockflag(s, SRTO_STREAMID, streamid, (int)strlen(streamid));
 //
 //     // DSCP AF41 (0x88): marks telemetry UDP packets as video-related traffic.
 //     int tos = 0x88;
 //     srt_setsockflag(s, SRTO_IPTOS, &tos, sizeof(tos));
+//
+//     // SRTO_RCVTIMEO: srt_recvmsg returns SRT_ERROR after 2 s of inactivity
+//     // so the receive goroutine can check for context cancellation.
+//     int rcvtimeo = 2000;
+//     srt_setsockflag(s, SRTO_RCVTIMEO, &rcvtimeo, sizeof(rcvtimeo));
 //
 //     // Passphrase authentication (AES-256).
 //     if (passphrase && strlen(passphrase) >= 10) {
@@ -57,6 +62,10 @@ package telemetry
 //     return srt_sendmsg(s, data, len, -1, 1);
 // }
 //
+// static int telem_recv(SRTSOCKET s, char *buf, int maxlen) {
+//     return srt_recvmsg(s, buf, maxlen);
+// }
+//
 // static void telem_close(SRTSOCKET s) {
 //     srt_close(s);
 // }
@@ -64,9 +73,14 @@ package telemetry
 // static int telem_invalid(SRTSOCKET s) {
 //     return s == SRT_INVALID_SOCK ? 1 : 0;
 // }
+//
+// static int telem_errno_is_timeout(void) {
+//     return srt_getlasterror(NULL) == SRT_ETIMEOUT ? 1 : 0;
+// }
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -77,66 +91,63 @@ import (
 	"racecast-emitter/internal/logger"
 )
 
-// Conn represents an SRT telemetry connection identified by a streamid.
+// Conn is the single bidirectional SRT telemetry connection (streamid "telemetry").
+// Outgoing: typed envelopes {"type":"ups","data":{...}} / {"type":"modem","data":{...}}.
+// Incoming: IDR request messages {"type":"idr","camera":"..."} from the receiver.
 type Conn struct {
+	// immutable after creation
+	ctx        context.Context
 	streamID   string
 	host       string
 	port       int
 	latency    int
 	passphrase string
-	mu         sync.Mutex
-	sock       C.SRTSOCKET
-	dialed     bool
+	onRecv     func([]byte) // called for each incoming message; nil = no receive
+
+	// mutable, protected by mu
+	mu          sync.Mutex
+	sock        C.SRTSOCKET
+	dialed      bool
+	recvStarted bool
 }
 
 // NewConn creates a Conn for the given streamid.
-// Reads RC_SRT_HOST, RC_SRT_PORT (default 9000) and RC_SRT_LATENCY (default 2000).
+// Reads RC_SRT_HOST, RC_SRT_PORT (default 9000) and RC_SRT_LATENCY (default 800).
+// onRecv is called (in a dedicated goroutine) for each message received from
+// the server; pass nil if no incoming messages are expected.
 // If RC_SRT_HOST is not set, Send is a no-op.
-func NewConn(streamID string) *Conn {
+func NewConn(ctx context.Context, streamID string, onRecv func([]byte)) *Conn {
 	return &Conn{
+		ctx:        ctx,
 		streamID:   streamID,
 		host:       os.Getenv("RC_SRT_HOST"),
 		port:       envInt("RC_SRT_PORT", 9000),
 		latency:    envInt("RC_SRT_LATENCY", 800),
 		passphrase: strings.TrimSpace(os.Getenv("RC_SRT_PASSPHRASE")),
+		onRecv:     onRecv,
 	}
 }
 
 // Send sends data over the SRT connection, connecting if necessary.
 // No-op (returns nil) if RC_SRT_HOST is not set.
-// On send failure the connection is closed; the caller retries on the next interval.
+// On send failure the connection is reset; reconnect happens on the next call.
+// SRT supports concurrent send/recv on the same socket; no lock is held
+// during the actual C call.
 func (c *Conn) Send(data []byte) error {
 	if c.host == "" {
 		return nil
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.dialed {
-		cHost := C.CString(c.host)
-		cSID := C.CString(c.streamID)
-		cPass := C.CString(c.passphrase)
-		sock := C.telem_dial(cHost, C.int(c.port), cSID, C.int(c.latency), cPass)
-		C.free(unsafe.Pointer(cHost))
-		C.free(unsafe.Pointer(cSID))
-		C.free(unsafe.Pointer(cPass))
-		if C.telem_invalid(sock) != 0 {
-			return fmt.Errorf("SRT connection failed to %s:%d (streamid=%s)", c.host, c.port, c.streamID)
-		}
-		c.sock = sock
-		c.dialed = true
-		logger.Info("[telemetry] Connected to %s:%d (streamid=%s)", c.host, c.port, c.streamID)
+	sock, err := c.ensureConnected()
+	if err != nil {
+		return err
 	}
-
 	if len(data) == 0 {
 		return nil
 	}
-	ret := C.telem_send(c.sock, (*C.char)(unsafe.Pointer(&data[0])), C.int(len(data)))
+	ret := C.telem_send(sock, (*C.char)(unsafe.Pointer(&data[0])), C.int(len(data)))
 	if int(ret) < 0 {
 		errStr := C.GoString(C.srt_getlasterror_str())
-		C.telem_close(c.sock)
-		c.dialed = false
+		c.resetSocket(sock)
 		return fmt.Errorf("SRT send: %s", errStr)
 	}
 	return nil
@@ -149,6 +160,78 @@ func (c *Conn) Close() {
 	if c.dialed {
 		C.telem_close(c.sock)
 		c.dialed = false
+		c.recvStarted = false
+	}
+}
+
+// ensureConnected dials if not connected, starts the receive goroutine once,
+// and returns the active socket. Lock is held only during state transitions.
+func (c *Conn) ensureConnected() (C.SRTSOCKET, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.dialed {
+		cHost := C.CString(c.host)
+		cSID := C.CString(c.streamID)
+		cPass := C.CString(c.passphrase)
+		sock := C.telem_dial(cHost, C.int(c.port), cSID, C.int(c.latency), cPass)
+		C.free(unsafe.Pointer(cHost))
+		C.free(unsafe.Pointer(cSID))
+		C.free(unsafe.Pointer(cPass))
+		if C.telem_invalid(sock) != 0 {
+			return 0, fmt.Errorf("SRT connection failed to %s:%d (streamid=%s)",
+				c.host, c.port, c.streamID)
+		}
+		c.sock = sock
+		c.dialed = true
+		c.recvStarted = false
+		logger.Info("[telemetry] Connected to %s:%d (streamid=%s)", c.host, c.port, c.streamID)
+	}
+
+	if !c.recvStarted && c.onRecv != nil {
+		c.recvStarted = true
+		go c.recvLoop(c.sock)
+	}
+
+	return c.sock, nil
+}
+
+// resetSocket closes the socket and marks the connection as disconnected.
+// No-op if sock no longer matches the current active socket (guards against races
+// when both Send and recvLoop detect the same failure simultaneously).
+func (c *Conn) resetSocket(sock C.SRTSOCKET) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dialed && c.sock == sock {
+		C.telem_close(sock)
+		c.dialed = false
+		c.recvStarted = false
+	}
+}
+
+// recvLoop reads incoming messages from the server and dispatches to onRecv.
+// Exits when the connection closes, on error, or when ctx is cancelled.
+// SRTO_RCVTIMEO = 2 s means telem_recv unblocks periodically so ctx can fire.
+func (c *Conn) recvLoop(sock C.SRTSOCKET) {
+	buf := make([]byte, 4096)
+
+	for {
+		if c.ctx.Err() != nil {
+			return
+		}
+		n := C.telem_recv(sock, (*C.char)(unsafe.Pointer(&buf[0])), C.int(len(buf)))
+		if n < 0 {
+			if C.telem_errno_is_timeout() != 0 {
+				continue // SRTO_RCVTIMEO expired — check ctx and loop
+			}
+			c.resetSocket(sock)
+			return
+		}
+		if n == 0 {
+			c.resetSocket(sock)
+			return
+		}
+		c.onRecv(buf[:int(n)])
 	}
 }
 
@@ -160,3 +243,4 @@ func envInt(key string, def int) int {
 	}
 	return def
 }
+

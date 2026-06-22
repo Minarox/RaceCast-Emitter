@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"math"
 	"os"
@@ -106,23 +107,40 @@ func main() {
 		logger.Warn("[srt] RC_SRT_HOST not set -- SRT streaming will be inactive")
 	}
 
-	upsConn   := telemetry.NewConn("telemetry:ups")
-	modemConn := telemetry.NewConn("telemetry:modem")
-	defer upsConn.Close()
-	defer modemConn.Close()
+	// Build camera name → slot map for IDR dispatch via the telemetry connection.
+	cameraByName := make(map[string]*pipeline.Slot, len(cfg.Cameras))
+	for _, cam := range cfg.Cameras {
+		if s, ok := cameraSlots[cam.UID]; ok {
+			cameraByName[cam.Name] = s
+		}
+	}
+
+	telemConn := telemetry.NewConn(ctx, "telemetry", func(msg []byte) {
+		var req struct {
+			Type   string `json:"type"`
+			Camera string `json:"camera"`
+		}
+		if json.Unmarshal(msg, &req) != nil || req.Type != "idr" {
+			return
+		}
+		if s, ok := cameraByName[req.Camera]; ok {
+			s.ForceIDR("avenc")
+		}
+	})
+	defer telemConn.Close()
 
 	// Send UPS values to the server every 2 s (when streaming is active).
 	if doStream {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ups.RunStream(ctx, upsConn)
+			ups.RunStream(ctx, telemConn)
 		}()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			modem.RunStream(ctx, modemConn)
+			modem.RunStream(ctx, telemConn)
 		}()
 	}
 

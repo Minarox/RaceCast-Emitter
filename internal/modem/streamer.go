@@ -87,7 +87,10 @@ func RunStream(ctx context.Context, conn *telemetry.Conn) {
 				data.Sats   = pos.Sats
 			}
 
-			payload, err := json.Marshal(data)
+			payload, err := json.Marshal(struct {
+				Type string    `json:"type"`
+				Data modemJSON `json:"data"`
+			}{Type: "modem", Data: data})
 			if err != nil {
 				continue
 			}

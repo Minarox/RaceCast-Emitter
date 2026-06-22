@@ -42,11 +42,12 @@ func RunStream(ctx context.Context, conn *telemetry.Conn) {
 		}
 
 		d := Read()
-		payload, err := json.Marshal(upsJSON{
-			V:   d.Voltage,
-			A:   d.Current,
-			W:   d.Power,
-			Pct: d.Percentage,
+		payload, err := json.Marshal(struct {
+			Type string  `json:"type"`
+			Data upsJSON `json:"data"`
+		}{
+			Type: "ups",
+			Data: upsJSON{V: d.Voltage, A: d.Current, W: d.Power, Pct: d.Percentage},
 		})
 		if err != nil {
 			continue
