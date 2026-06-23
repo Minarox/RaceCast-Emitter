@@ -63,6 +63,10 @@ func RunStream(ctx context.Context, conn *telemetry.Conn) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if age := NMEAAge(); age > 5*time.Second {
+				logger.Warn("[modem] GPS data stale (%.0fs since last epoch, reader may have stopped)", age.Seconds())
+			}
+
 			sentences, err := GetNMEA()
 			if err != nil {
 				logger.Warn("[modem] GetNMEA : %v", err)

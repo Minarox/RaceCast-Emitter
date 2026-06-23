@@ -26,11 +26,14 @@ var (
 
 	// NMEA cache updated by the background serial reader goroutine.
 	// Contains all frames from the last complete GPS epoch.
-	nmeaMu    sync.RWMutex
-	nmeaEpoch []string
+	nmeaMu         sync.RWMutex
+	nmeaEpoch      []string
+	nmeaLastUpdate time.Time // time of the last published epoch
 
-	// Handle to the NMEA serial port, used for clean shutdown.
+	// Handle to the current NMEA serial port (set by nmeaReaderLoop).
 	nmeaFile *os.File
+	// nmeaStop is closed by Close() to terminate nmeaReaderLoop permanently.
+	nmeaStop chan struct{}
 )
 
 // Open initializes the modem and starts the NMEA serial reader.
@@ -82,35 +85,95 @@ func Open() error {
 	if err != nil {
 		return fmt.Errorf("NMEA port %s: %w", portPath, err)
 	}
-	nmeaFile = f
-
-	go runNMEAReader(f)
+	nmeaStop = make(chan struct{})
+	go nmeaReaderLoop(portPath, f, nmeaStop)
 
 	logger.Info("[modem] GPS started (gps-unmanaged, port: %s)", portPath)
 	return nil
 }
 
-// Close closes the NMEA serial port to unblock and stop the runNMEAReader goroutine.
-// Idempotent.
+// Close stops the NMEA reader loop and closes the current serial port. Idempotent.
 func Close() {
 	mu.Lock()
-	defer mu.Unlock()
-	if nmeaFile != nil {
-		nmeaFile.Close()
-		nmeaFile = nil
+	stopCh := nmeaStop
+	f := nmeaFile
+	nmeaStop = nil
+	nmeaFile = nil
+	mu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
+	}
+	if f != nil {
+		f.Close() // unblocks the scanner inside readNMEALines
 	}
 }
 
-// runNMEAReader continuously reads the GNSS serial port and updates nmeaEpoch.
-// Frames are grouped by GPS cycle: each new GGA frame starts a new epoch.
-func runNMEAReader(f *os.File) {
-	defer f.Close()
+// nmeaReaderLoop runs readNMEALines in a restart loop, reopening the port on I/O errors.
+// Stops permanently when stop is closed.
+func nmeaReaderLoop(portPath string, initialFile *os.File, stop <-chan struct{}) {
+	f := initialFile
+	for {
+		mu.Lock()
+		nmeaFile = f
+		mu.Unlock()
+
+		// Watcher: close f when stop fires to unblock the scanner.
+		watchDone := make(chan struct{})
+		go func(file *os.File) {
+			select {
+			case <-stop:
+				file.Close()
+			case <-watchDone:
+			}
+		}(f)
+
+		readNMEALines(f)
+		close(watchDone)
+		f.Close() // idempotent if already closed by watcher
+
+		mu.Lock()
+		if nmeaFile == f {
+			nmeaFile = nil
+		}
+		mu.Unlock()
+
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		logger.Warn("[modem] NMEA reader stopped, reconnecting...")
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Second):
+			}
+			var err error
+			f, err = os.Open(portPath)
+			if err == nil {
+				break
+			}
+			logger.Warn("[modem] NMEA port %s unavailable: %v", portPath, err)
+		}
+	}
+}
+
+// readNMEALines reads GNSS sentences from f into nmeaEpoch (grouped by GGA cycle).
+// Returns when f is closed or an I/O error occurs.
+func readNMEALines(f *os.File) {
 	scanner := bufio.NewScanner(f)
 
 	var pending []string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "$") {
+			continue
+		}
+		if !validNMEA(line) {
+			logger.Warn("[modem] NMEA checksum mismatch, skipping: %.80s", line)
 			continue
 		}
 
@@ -120,6 +183,7 @@ func runNMEAReader(f *os.File) {
 			copy(snap, pending)
 			nmeaMu.Lock()
 			nmeaEpoch = snap
+			nmeaLastUpdate = time.Now()
 			nmeaMu.Unlock()
 			pending = pending[:0]
 		}
@@ -129,10 +193,11 @@ func runNMEAReader(f *os.File) {
 	if len(pending) > 0 {
 		nmeaMu.Lock()
 		nmeaEpoch = pending
+		nmeaLastUpdate = time.Now()
 		nmeaMu.Unlock()
 	}
 	if err := scanner.Err(); err != nil {
-		logger.Warn("[modem] NMEA reader stopped: %v", err)
+		logger.Warn("[modem] NMEA reader error: %v", err)
 	}
 }
 
@@ -147,6 +212,34 @@ func GetNMEA() ([]string, error) {
 	result := make([]string, len(nmeaEpoch))
 	copy(result, nmeaEpoch)
 	return result, nil
+}
+
+// NMEAAge returns time since the last complete GPS epoch (one hour if none received).
+func NMEAAge() time.Duration {
+	nmeaMu.RLock()
+	defer nmeaMu.RUnlock()
+	if nmeaLastUpdate.IsZero() {
+		return time.Hour
+	}
+	return time.Since(nmeaLastUpdate)
+}
+
+// validNMEA checks the XOR checksum of an NMEA sentence ("$...*HH").
+// Returns true if there is no checksum field or the checksum is valid.
+func validNMEA(s string) bool {
+	star := strings.IndexByte(s, '*')
+	if star < 0 || star+3 > len(s) {
+		return true // no checksum field – accept
+	}
+	var chk byte
+	for i := 1; i < star; i++ { // XOR bytes between '$' and '*'
+		chk ^= s[i]
+	}
+	want, err := strconv.ParseUint(s[star+1:star+3], 16, 8)
+	if err != nil {
+		return false
+	}
+	return chk == byte(want)
 }
 
 // SignalStats holds modem network information.
@@ -331,8 +424,7 @@ func ParseNMEA(sentences []string) (Position, bool) {
 	return pos, hasGGA || hasRMC
 }
 
-// parseGGA parses a $GPGGA/$GNGGA sentence.
-// NMEA format: $GPGGA,hhmmss.ss,llll.ll,a,yyyyy.yy,a,x,xx,x.x,x.x,M,...
+// parseGGA parses a $GPGGA/$GNGGA sentence. Returns sats/HDOP even without a fix.
 func parseGGA(s string) (Position, bool) {
 	if idx := strings.Index(s, "*"); idx >= 0 {
 		s = s[:idx]
@@ -343,19 +435,23 @@ func parseGGA(s string) (Position, bool) {
 	}
 
 	quality, _ := strconv.Atoi(f[6])
-
-	lat, ok := nmeaToDecimal(f[2], f[3])
-	if !ok {
-		return Position{}, false
-	}
-	lon, ok := nmeaToDecimal(f[4], f[5])
-	if !ok {
-		return Position{}, false
-	}
-
 	sats, _ := strconv.Atoi(f[7])
 	hdop, _ := strconv.ParseFloat(f[8], 64)
 	alt, _ := strconv.ParseFloat(f[9], 64)
+
+	if quality == 0 || f[2] == "" {
+		// No fix: still return sats/HDOP for diagnostics.
+		return Position{Sats: sats, HDOP: hdop, Fix: false}, true
+	}
+
+	lat, ok := nmeaToDecimal(f[2], f[3])
+	if !ok {
+		return Position{Sats: sats, HDOP: hdop, Fix: false}, true
+	}
+	lon, ok := nmeaToDecimal(f[4], f[5])
+	if !ok {
+		return Position{Sats: sats, HDOP: hdop, Fix: false}, true
+	}
 
 	return Position{
 		Lat:  lat,
@@ -363,7 +459,7 @@ func parseGGA(s string) (Position, bool) {
 		Alt:  alt,
 		HDOP: hdop,
 		Sats: sats,
-		Fix:  quality > 0,
+		Fix:  true,
 	}, true
 }
 
