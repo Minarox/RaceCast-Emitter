@@ -9,10 +9,13 @@ package pipeline
 // static int start_pipeline_inner(GstElement *pipeline, char **errmsg) {
 //     *errmsg = NULL;
 //     GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
-//     if (ret == GST_STATE_CHANGE_ASYNC) {
-//         GstState state;
-//         ret = gst_element_get_state(pipeline, &state, NULL, 10 * GST_SECOND);
-//     }
+//     // For live pipelines (intervideosrc, v4l2src) and hardware encoders
+//     // (nvv4l2av1enc), the state change is always GST_STATE_CHANGE_ASYNC:
+//     // the hardware initialises in the background after set_state returns.
+//     // Waiting for ASYNC completion here holds silenceMu for up to 10 s,
+//     // which serialises every concurrent Poll call (udev retries × 10 s =
+//     // 30 s total startup delay). Accept ASYNC immediately: real errors are
+//     // caught by watchBus.
 //     if (ret == GST_STATE_CHANGE_FAILURE) {
 //         // Read the first error message from the bus for a useful diagnostic.
 //         GstBus *bus = gst_element_get_bus(pipeline);
@@ -97,11 +100,15 @@ package pipeline
 // }
 //
 // // force_idr requests an immediate IDR frame from a named encoder element.
+// // On Jetson nvv4l2* encoders, "force-IDR" is a signal, not a property:
+// //   g_signal_emit_by_name (element, "force-IDR");
+// // Using g_object_set for a signal name produces a GLib-CRITICAL and does
+// // nothing. This function uses g_signal_emit_by_name unconditionally; if the
+// // element has no such signal the call is silently ignored by GLib.
 // static void force_idr(GstElement *pipeline, const char *name) {
 //     GstElement *enc = gst_bin_get_by_name(GST_BIN(pipeline), name);
 //     if (!enc) return;
-//     gboolean v = TRUE;
-//     g_object_set(enc, "force-IDR", v, NULL);
+//     g_signal_emit_by_name(enc, "force-IDR", NULL);
 //     gst_object_unref(enc);
 // }
 //
@@ -144,6 +151,18 @@ package pipeline
 //     g_object_set(v, "drop", drop, NULL);
 //     gst_object_unref(v);
 // }
+//
+// // set_pipeline_paused transitions the pipeline to GST_STATE_PAUSED without
+// // blocking. The SRT connection is dropped; GPU encoder becomes idle.
+// static void set_pipeline_paused(GstElement *pipeline) {
+//     gst_element_set_state(pipeline, GST_STATE_PAUSED);
+// }
+//
+// // set_pipeline_playing transitions the pipeline back to GST_STATE_PLAYING
+// // without blocking. SRT reconnect resumes immediately.
+// static void set_pipeline_playing(GstElement *pipeline) {
+//     gst_element_set_state(pipeline, GST_STATE_PLAYING);
+// }
 import "C"
 
 import (
@@ -165,19 +184,22 @@ func init() {
 // Prevents fd-1 being permanently lost when goroutines dup(1) concurrently.
 var silenceMu sync.Mutex
 
-// GstPipeline manages a single GStreamer pipeline (capture + srtsink or filesink or both via tee).
+// GstPipeline manages a single GStreamer pipeline (source, record, or stream).
 type GstPipeline struct {
-	mu       sync.Mutex
-	pipeline *C.GstElement
-	ctx      context.Context
-	cancel   context.CancelFunc
-	running  bool
-	onError  func()
-	wg       sync.WaitGroup
+	mu         sync.Mutex
+	pipeline   *C.GstElement
+	ctx        context.Context    // drain context — independent of the parent, cancelled only by CancelPipeline or EOS
+	cancel     context.CancelFunc // cancels the drain context
+	controlCtx context.Context    // parent context — used only for startup checks in activate()
+	running    bool
+	onError    func()
+	wg         sync.WaitGroup
 }
 
 // newGstPipeline creates a GStreamer pipeline from a description string.
-// ctx is parent: cancelling it also cancels watchBus().
+// parentCtx is stored as the control context for startup checks only; the
+// pipeline's drain context is independent so that cancelling the parent does
+// not bypass EOS-based finalisation of recording files.
 func newGstPipeline(parentCtx context.Context, pipelineStr string) (*GstPipeline, error) {
 	cStr := C.CString(pipelineStr)
 	defer C.free(unsafe.Pointer(cStr))
@@ -190,11 +212,15 @@ func newGstPipeline(parentCtx context.Context, pipelineStr string) (*GstPipeline
 		return nil, fmt.Errorf("gst_parse_launch : %s", msg)
 	}
 
-	ctx, cancel := context.WithCancel(parentCtx)
+	// Use context.Background() so that cancelling the main/parent context does
+	// NOT immediately abort watchBus(). The drain context is cancelled explicitly
+	// via Cancel() after EOS has propagated (or after a drain timeout).
+	ctx, cancel := context.WithCancel(context.Background())
 	return &GstPipeline{
-		pipeline: gp,
-		ctx:      ctx,
-		cancel:   cancel,
+		pipeline:   gp,
+		ctx:        ctx,
+		cancel:     cancel,
+		controlCtx: parentCtx,
 	}, nil
 }
 
@@ -313,7 +339,34 @@ func StartEach(pipelines []*GstPipeline, onReady func(int, error)) {
 
 // SendEOS injects an EOS event at the pipeline source.
 func (p *GstPipeline) SendEOS() {
-	C.send_eos(p.pipeline)
+	p.mu.Lock()
+	pip := p.pipeline
+	p.mu.Unlock()
+	if pip == nil {
+		return
+	}
+	C.send_eos(pip)
+}
+
+// Pause transitions the pipeline to GST_STATE_PAUSED (non-blocking). The SRT
+// connection is dropped and GPU encoder becomes idle until Play() is called.
+func (p *GstPipeline) Pause() {
+	p.mu.Lock()
+	pip := p.pipeline
+	p.mu.Unlock()
+	if pip != nil {
+		C.set_pipeline_paused(pip)
+	}
+}
+
+// Play transitions the pipeline back to GST_STATE_PLAYING (non-blocking).
+func (p *GstPipeline) Play() {
+	p.mu.Lock()
+	pip := p.pipeline
+	p.mu.Unlock()
+	if pip != nil {
+		C.set_pipeline_playing(pip)
+	}
 }
 
 // Cancel cancels the pipeline's internal context, causing watchBus() to exit

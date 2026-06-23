@@ -21,19 +21,20 @@ const (
 )
 
 // modemJSON is the JSON payload sent to the server at each interval.
-// GPS fields are zero when no fix is available (fix=false).
+// GPS pointer fields are omitted when there is no fix, so the receiver
+// keeps the last known position rather than resetting it to zero.
 type modemJSON struct {
-	// GPS
-	Lat    float64 `json:"lat"`
-	Lon    float64 `json:"lon"`
-	Alt    float64 `json:"alt"`
-	Speed  float64 `json:"spd"`  // knots
-	Course float64 `json:"cog"`  // true degrees
-	HDOP   float64 `json:"hdop"`
-	Sats   int     `json:"sats"`
-	Fix    bool    `json:"fix"`
-	NMEA   string  `json:"nmea"` // raw NMEA sentences joined by \r\n
-	// Network
+	// GPS — nil when no fix; receiver must keep last known position when absent
+	Lat    *float64 `json:"lat,omitempty"`
+	Lon    *float64 `json:"lon,omitempty"`
+	Alt    *float64 `json:"alt,omitempty"`
+	Speed  *float64 `json:"spd,omitempty"`  // knots
+	Course *float64 `json:"cog,omitempty"`  // true degrees
+	HDOP   *float64 `json:"hdop,omitempty"`
+	Sats   *int     `json:"sats,omitempty"`
+	Fix    bool     `json:"fix"`
+	NMEA   *string  `json:"nmea,omitempty"` // raw NMEA sentences joined by \r\n
+	// Network — always present
 	Signal uint32 `json:"signal"` // signal quality 0–100 %
 	Tech   string `json:"tech"`   // active technology (e.g. "lte", "lte+nr5g")
 }
@@ -58,13 +59,20 @@ func RunStream(ctx context.Context, conn *telemetry.Conn) {
 
 	logger.Info("[modem] Telemetry started")
 
+	gpsStale := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			if age := NMEAAge(); age > 5*time.Second {
-				logger.Warn("[modem] GPS data stale (%.0fs since last epoch, reader may have stopped)", age.Seconds())
+				if !gpsStale {
+					logger.Warn("[modem] GPS data stale (%.0fs since last epoch, reader may have stopped)", age.Seconds())
+					gpsStale = true
+				}
+			} else if gpsStale {
+				logger.Info("[modem] GPS data recovered")
+				gpsStale = false
 			}
 
 			sentences, err := GetNMEA()
@@ -77,18 +85,20 @@ func RunStream(ctx context.Context, conn *telemetry.Conn) {
 
 			data := modemJSON{
 				Fix:    hasPos && pos.Fix,
-				NMEA:   strings.Join(sentences, "\r\n"),
 				Signal: stats.Quality,
 				Tech:   stats.Tech,
 			}
-			if hasPos {
-				data.Lat    = pos.Lat
-				data.Lon    = pos.Lon
-				data.Alt    = pos.Alt
-				data.Speed  = pos.Speed
-				data.Course = pos.Course
-				data.HDOP   = pos.HDOP
-				data.Sats   = pos.Sats
+			if hasPos && pos.Fix {
+				nmea := strings.Join(sentences, "\r\n")
+				sats := pos.Sats
+				data.Lat    = &pos.Lat
+				data.Lon    = &pos.Lon
+				data.Alt    = &pos.Alt
+				data.Speed  = &pos.Speed
+				data.Course = &pos.Course
+				data.HDOP   = &pos.HDOP
+				data.Sats   = &sats
+				data.NMEA   = &nmea
 			}
 
 			payload, err := json.Marshal(struct {

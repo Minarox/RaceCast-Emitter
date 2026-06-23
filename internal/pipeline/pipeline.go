@@ -46,31 +46,62 @@ func sanitize(name string) string {
 	return strings.NewReplacer(" ", "_", "/", "-").Replace(name)
 }
 
+// Slot manages the three independent GStreamer pipelines for a single source
+// (camera or microphone):
+//
+//   - source: always running while the device is connected; captures and
+//     distributes raw frames to both consumer channels via inter elements.
+//   - record: created per recording session (started at launch or on button
+//     press); reads from the record inter channel and writes a fragmented MP4.
+//   - stream: persistent while streaming is configured; reads from the stream
+//     inter channel and encodes to AV1/Opus → SRT. Paused during modem
+//     outages and resumed instantly when connectivity returns.
 type Slot struct {
 	mu       sync.Mutex
-	gst      *GstPipeline
+	source   *GstPipeline
+	record   *GstPipeline
+	stream   *GstPipeline
 	notFound bool
 }
 
-func (s *Slot) IsRunning() bool {
+func (s *Slot) IsSourceRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.gst != nil
+	return s.source != nil
 }
 
-// activate registers gp in the slot, wires wg.Done() and background cleanup.
-// If ctx is already cancelled, frees the pipeline without adding to wg.
-func (s *Slot) activate(label string, gp *GstPipeline, wg *sync.WaitGroup) {
-	// Context already cancelled: skip wg registration.
+func (s *Slot) IsRecordRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.record != nil
+}
+
+func (s *Slot) IsStreamRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream != nil
+}
+
+// activatePipeline registers gp in the slot field pointed to by field, adds a
+// wg entry, and spawns a goroutine that calls wg.Done() once the pipeline stops.
+// If the control context was cancelled during startup, the pipeline is discarded.
+// A second call with the same field while one is already active is a no-op.
+func (s *Slot) activatePipeline(label string, gp *GstPipeline, field **GstPipeline, wg *sync.WaitGroup) {
 	select {
-	case <-gp.ctx.Done():
-		logger.Info("[%s] Context cancelled during startup -- pipeline discarded", label)
+	case <-gp.controlCtx.Done():
+		logger.Info("[%s] Context cancelled during startup — pipeline discarded", label)
 		go func() { gp.SetNull(); gp.Free() }()
 		return
 	default:
 	}
 	s.mu.Lock()
-	s.gst = gp
+	if *field != nil {
+		// Another goroutine already activated this pipeline type.
+		s.mu.Unlock()
+		go func() { gp.SetNull(); gp.Free() }()
+		return
+	}
+	*field = gp
 	s.mu.Unlock()
 	logger.Info("[%s] GStreamer pipeline started", label)
 	wg.Add(1)
@@ -79,202 +110,253 @@ func (s *Slot) activate(label string, gp *GstPipeline, wg *sync.WaitGroup) {
 		gp.wg.Wait()
 		logger.Info("[%s] GStreamer pipeline stopped", label)
 		s.mu.Lock()
-		if s.gst == gp {
-			s.gst = nil
+		if *field == gp {
+			*field = nil
 		}
 		s.mu.Unlock()
-		// SetNull/Free in background: srtsink may block on reconnect.
-		go func() {
-			gp.SetNull()
-			gp.Free()
-		}()
+		go func() { gp.SetNull(); gp.Free() }()
 	}()
 }
 
-func (s *Slot) SendEOS() {
+// Stop gracefully shuts down all pipelines for this slot:
+//   - record pipeline receives EOS so that the MP4 container is finalised before exit.
+//   - source and stream pipelines are cancelled immediately (no persistent state).
+func (s *Slot) Stop() {
 	s.mu.Lock()
-	gp := s.gst
+	src := s.source
+	rec := s.record
+	str := s.stream
 	s.mu.Unlock()
-	if gp != nil {
-		gp.SendEOS()
-		// Cancel unblocks watchBus(): srtsink in reconnect mode never produces EOS.
-		gp.Cancel()
+
+	// Cancel source and stream immediately — nothing to finalise.
+	if src != nil {
+		src.Cancel()
+	}
+	if str != nil {
+		str.Cancel()
+	}
+	// Send EOS to record so that mp4mux flushes and filesink closes cleanly.
+	// EOS is injected directly at intervideosrc/interaudiosrc (the pipeline's
+	// source element), so it propagates without needing the source pipeline.
+	if rec != nil {
+		rec.SendEOS()
 	}
 }
 
-// ForceIDR forces an IDR frame on the AV1 encoder. No-op if not running.
+// PauseStream sets the streaming pipeline to GST_STATE_PAUSED.
+// The AV1/Opus encoder stops consuming GPU resources; srtsink drops the
+// connection. The pipeline can be resumed instantly via ResumeStream.
+func (s *Slot) PauseStream() {
+	s.mu.Lock()
+	gp := s.stream
+	s.mu.Unlock()
+	if gp != nil {
+		gp.Pause()
+	}
+}
+
+// ResumeStream transitions the streaming pipeline back to GST_STATE_PLAYING.
+// An IDR is forced only when intra-refresh is disabled: with intra-refresh
+// active, forcing an IDR on a recovering link would cause a bitrate spike
+// that defeats the purpose of intra-refresh. The rolling refresh repopulates
+// the picture gradually without the spike.
+func (s *Slot) ResumeStream() {
+	s.mu.Lock()
+	gp := s.stream
+	s.mu.Unlock()
+	if gp != nil {
+		gp.Play()
+		if intraRefreshPeriod() == 0 {
+			gp.ForceIDR("avenc") // no-op on audio pipelines (element not found)
+		}
+	}
+}
+
+// ForceIDR requests an immediate IDR frame on the stream pipeline's encoder.
 func (s *Slot) ForceIDR(encoderName string) {
 	s.mu.Lock()
-	gp := s.gst
+	gp := s.stream
 	s.mu.Unlock()
 	if gp != nil {
 		gp.ForceIDR(encoderName)
 	}
 }
 
-// SetStreamValve opens (drop=false) or closes (drop=true) the streaming valve.
-// When opening, forces an IDR frame so the receiver can decode immediately.
-// No-op if the pipeline is not running or has no streaming branch.
-func (s *Slot) SetStreamValve(drop bool) {
-	s.mu.Lock()
-	gp := s.gst
-	s.mu.Unlock()
-	if gp == nil {
-		return
-	}
-	gp.SetValve("streamvalve", drop)
-	if !drop {
-		gp.ForceIDR("avenc") // no-op on audio pipelines (element not found)
-	}
-}
-
-// SetRecordValve opens (drop=false) or closes (drop=true) the recording valve.
-// No-op if the pipeline is not running or has no record valve (e.g. record-only mode).
-func (s *Slot) SetRecordValve(drop bool) {
-	s.mu.Lock()
-	gp := s.gst
-	s.mu.Unlock()
-	if gp == nil {
-		return
-	}
-	gp.SetValve("recordvalve", drop)
-}
+// ── Poll ─────────────────────────────────────────────────────────────────────
 
 type PollOptions struct {
 	Record bool
 	Stream bool
 }
 
+// Poll scans all configured sources and starts any pipeline that is not yet
+// running. For each source it may start up to three pipelines (source, record,
+// stream) in a single StartEach call so that inter-element channels are
+// established atomically.
 func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots, micSlots map[string]*Slot, wg *sync.WaitGroup) {
 	if ctx.Err() != nil {
 		return
 	}
 
-	// All streams share one SRT port; receiver distinguishes by streamid.
 	srtPort := srtPortStart()
 
-	// startEntry holds the data needed to start a pipeline.
-	type startEntry struct {
-		label       string
-		pipelineStr string
-		slot        *Slot
-		maxBitrate  int  // 0 for record-only or audio entries
-		isStreaming bool // true when the entry has an active SRT sink
-		doRecord    bool // true when the record branch should be active
+	type entry struct {
+		label      string
+		str        string
+		slot       *Slot
+		field      **GstPipeline
+		isStream   bool
+		maxBitrate int
 	}
 
-	var entries []startEntry
+	var entries []entry
 
+	// ── Cameras ──────────────────────────────────────────────────────────────
 	for i := range cfg.Cameras {
 		cam := cfg.Cameras[i]
 		if cam.Disabled {
 			continue
 		}
 		s := cameraSlots[cam.UID]
-		if s == nil || s.IsRunning() {
+		if s == nil {
 			continue
 		}
 		doStream := opts.Stream && cam.HasStream()
 		if !opts.Record && !doStream {
 			continue
 		}
-		dev, err := devices.FindVideo(cam.UID)
-		if err != nil {
-			if !s.notFound {
-				logger.Warn("[camera:%s] Not found (UID: %s), waiting...", cam.Name, cam.UID)
-				s.notFound = true
+
+		label := "camera:" + sanitize(cam.Name)
+
+		// Source pipeline requires the physical device.
+		if !s.IsSourceRunning() {
+			dev, err := devices.FindVideo(cam.UID)
+			if err != nil {
+				if !s.notFound {
+					logger.Warn("[%s] Not found (UID: %s), waiting...", label, cam.UID)
+					s.notFound = true
+				}
+				continue
 			}
-			continue
+			s.notFound = false
+
+			switch {
+			case opts.Record && doStream:
+				logger.Info("[%s] %s → H.264 record + AV1/SRT stream (port %d)", label, dev, srtPort)
+			case opts.Record:
+				logger.Info("[%s] %s → H.264 record", label, dev)
+			default:
+				logger.Info("[%s] %s → AV1/SRT stream (port %d)", label, dev, srtPort)
+			}
+
+			entries = append(entries, entry{
+				label: label + ":source",
+				str:   BuildVideoSourceStr(cam, dev),
+				slot:  s,
+				field: &s.source,
+			})
 		}
-		s.notFound = false
-		// Always provide a valid outputPath: "/dev/null" when recording is disabled
-		// so the record branch (valve closed) has a valid filesink location.
-		outputPath := "/dev/null"
-		if opts.Record {
+
+		if opts.Record && !s.IsRecordRunning() {
 			now := time.Now()
 			dir := filepath.Join(recordsDir, now.Format("2006-01-02"))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
-				logger.Error("[camera:%s] Failed to create directory: %v", cam.Name, err)
+				logger.Error("[%s] Failed to create directory: %v", label, err)
 				continue
 			}
-			outputPath = filepath.Join(dir, fmt.Sprintf("%s_%s_video.mp4", now.Format("15-04-05"), sanitize(cam.Name)))
+			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_video.mp4",
+				now.Format("15-04-05"), sanitize(cam.Name)))
+			entries = append(entries, entry{
+				label: label + ":record",
+				str:   BuildVideoRecordStr(cam, outputPath),
+				slot:  s,
+				field: &s.record,
+			})
 		}
-		port := 0
-		if doStream {
-			port = srtPort
+
+		if doStream && !s.IsStreamRunning() {
+			entries = append(entries, entry{
+				label:      label + ":stream",
+				str:        BuildVideoStreamStr(cam, srtPort),
+				slot:       s,
+				field:      &s.stream,
+				isStream:   true,
+				maxBitrate: cam.StreamBitrate(),
+			})
 		}
-		label := "camera:" + sanitize(cam.Name)
-		switch {
-		case opts.Record && doStream:
-			logger.Info("[%s] %s -> record + AV1/SRT stream (port %d)", label, dev, port)
-		case opts.Record:
-			logger.Info("[%s] %s -> H.264 record", label, dev)
-		default:
-			logger.Info("[%s] %s -> AV1/SRT stream (port %d)", label, dev, port)
-		}
-		entries = append(entries, startEntry{
-			label:       label,
-			pipelineStr: BuildVideoStr(cam, dev, outputPath, port),
-			slot:        s,
-			maxBitrate:  cam.StreamBitrate(),
-			isStreaming: doStream,
-			doRecord:    opts.Record,
-		})
 	}
 
+	// ── Microphones ──────────────────────────────────────────────────────────
 	for i := range cfg.Microphones {
 		mic := cfg.Microphones[i]
 		if mic.Disabled {
 			continue
 		}
 		s := micSlots[mic.UID]
-		if s == nil || s.IsRunning() {
+		if s == nil {
 			continue
 		}
 		doStream := opts.Stream && mic.HasStream()
 		if !opts.Record && !doStream {
 			continue
 		}
-		alsaDev, err := devices.FindALSA(mic.UID)
-		if err != nil {
-			if !s.notFound {
-				logger.Warn("[mic:%s] Not found (UID: %s), waiting...", mic.Name, mic.UID)
-				s.notFound = true
+
+		label := "mic:" + sanitize(mic.Name)
+
+		if !s.IsSourceRunning() {
+			alsaDev, err := devices.FindALSA(mic.UID)
+			if err != nil {
+				if !s.notFound {
+					logger.Warn("[%s] Not found (UID: %s), waiting...", label, mic.UID)
+					s.notFound = true
+				}
+				continue
 			}
-			continue
+			s.notFound = false
+
+			switch {
+			case opts.Record && doStream:
+				logger.Info("[%s] %s → AAC record + Opus/SRT stream (port %d)", label, alsaDev, srtPort)
+			case opts.Record:
+				logger.Info("[%s] %s → AAC record", label, alsaDev)
+			default:
+				logger.Info("[%s] %s → Opus/SRT stream (port %d)", label, alsaDev, srtPort)
+			}
+
+			entries = append(entries, entry{
+				label: label + ":source",
+				str:   BuildAudioSourceStr(mic, alsaDev),
+				slot:  s,
+				field: &s.source,
+			})
 		}
-		s.notFound = false
-		// For audio, outputPath="" means stream-only (no mp4mux/blacktrack).
-		outputPath := ""
-		if opts.Record {
+
+		if opts.Record && !s.IsRecordRunning() {
 			now := time.Now()
 			dir := filepath.Join(recordsDir, now.Format("2006-01-02"))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
-				logger.Error("[mic:%s] Failed to create directory: %v", mic.Name, err)
+				logger.Error("[%s] Failed to create directory: %v", label, err)
 				continue
 			}
-			outputPath = filepath.Join(dir, fmt.Sprintf("%s_%s_audio.mp4", now.Format("15-04-05"), sanitize(mic.Name)))
+			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_audio.mp4",
+				now.Format("15-04-05"), sanitize(mic.Name)))
+			entries = append(entries, entry{
+				label: label + ":record",
+				str:   BuildAudioRecordStr(mic, outputPath),
+				slot:  s,
+				field: &s.record,
+			})
 		}
-		port := 0
-		if doStream {
-			port = srtPort
+
+		if doStream && !s.IsStreamRunning() {
+			entries = append(entries, entry{
+				label:    label + ":stream",
+				str:      BuildAudioStreamStr(mic, srtPort),
+				slot:     s,
+				field:    &s.stream,
+				isStream: true,
+			})
 		}
-		label := "mic:" + sanitize(mic.Name)
-		switch {
-		case opts.Record && doStream:
-			logger.Info("[%s] %s -> record + Opus/SRT stream (port %d)", label, alsaDev, port)
-		case opts.Record:
-			logger.Info("[%s] %s -> AAC record", label, alsaDev)
-		default:
-			logger.Info("[%s] %s -> Opus/SRT stream (port %d)", label, alsaDev, port)
-		}
-		entries = append(entries, startEntry{
-			label:       label,
-			pipelineStr: BuildAudioStr(mic, alsaDev, outputPath, port),
-			slot:        s,
-			doRecord:    opts.Record,
-			isStreaming: doStream,
-		})
 	}
 
 	if len(entries) == 0 {
@@ -283,7 +365,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 
 	// Phase 1: create all GStreamer pipelines (gst_parse_launch).
 	type prepEntry struct {
-		startEntry
+		entry
 		gp *GstPipeline
 	}
 	var preps []prepEntry
@@ -291,25 +373,25 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		e := e
 		s := e.slot
 		s.mu.Lock()
-		ok := ctx.Err() == nil && s.gst == nil
+		ok := ctx.Err() == nil && *e.field == nil
 		s.mu.Unlock()
 		if !ok {
 			continue
 		}
-		gp, err := newGstPipeline(ctx, e.pipelineStr)
+		gp, err := newGstPipeline(ctx, e.str)
 		if err != nil {
 			logger.Error("[%s] Failed to create pipeline: %v", e.label, err)
 			continue
 		}
+		field := e.field
 		gp.SetOnError(func() {
 			s.mu.Lock()
-			if s.gst == gp {
-				gp.SetNull()
-				gp.Free()
-				s.gst = nil
+			if *field == gp {
+				*field = nil
 			}
 			s.mu.Unlock()
-			logger.Warn("[%s] Pipeline error -- device disconnected?", e.label)
+			go func() { gp.SetNull(); gp.Free() }()
+			logger.Warn("[%s] Pipeline error — device disconnected?", e.label)
 		})
 		preps = append(preps, prepEntry{e, gp})
 	}
@@ -318,8 +400,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		return
 	}
 
-	// Start all pipelines in parallel; activate each on GST_STATE_PLAYING.
-	// Audio (~100 ms) starts while camera encoders (3–5 s) are still warming up.
+	// Phase 2: start all pipelines in parallel (single silence window).
 	gpList := make([]*GstPipeline, len(preps))
 	for i, pe := range preps {
 		gpList[i] = pe.gp
@@ -328,24 +409,18 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		pe := preps[i]
 		if err != nil {
 			logger.Error("[%s] Failed to start pipeline: %v", pe.label, err)
-			go pe.gp.Free() // run in background: Free acquires silenceMu
+			go pe.gp.Free()
 			return
 		}
-		pe.slot.activate(pe.label, pe.gp, wg)
-		// Apply initial valve states based on run mode.
-		if !pe.doRecord {
-			pe.slot.SetRecordValve(true) // close record branch (stream-only mode)
-		}
-		if !pe.isStreaming {
-			pe.slot.SetStreamValve(true) // close stream branch (no SRT configured)
+		pe.slot.activatePipeline(pe.label, pe.gp, pe.field, wg)
+		if !pe.isStream {
 			return
 		}
-		// Intra-refresh: set on AV1 encoder after startup.
+		// Stream pipeline post-start: intra-refresh + local ABR.
 		if period := intraRefreshPeriod(); period > 0 {
 			pe.gp.TrySetIntraRefresh("avenc", period)
 			logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
 		}
-		// Local ABR: reads srtsink statistics directly — no network round-trip.
 		minBR := pe.maxBitrate / 5
 		pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
 	})

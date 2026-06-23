@@ -48,6 +48,7 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 	var prevSent int64
 	var prevLost int
 	prevEffectiveMax := maxBitrate // tracks last logged modem ceiling
+	srtConnected := false
 
 	for {
 		select {
@@ -59,6 +60,14 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 		rttMS, bwMbps, sentTotal, lostTotal := p.GetSRTSinkStats(sinkName)
 		if sentTotal == 0 {
 			continue // srtsink not yet connected to the server
+		}
+
+		// Force an IDR as soon as SRT connects so the server can start
+		// decoding immediately without waiting for the next natural keyframe.
+		if !srtConnected {
+			srtConnected = true
+			logger.Info("[abr:%s] SRT connected — forcing IDR", encoderName)
+			p.ForceIDR(encoderName)
 		}
 
 		// Interval packet-loss rate from cumulative delta.

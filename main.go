@@ -99,9 +99,15 @@ func main() {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var wg sync.WaitGroup
+
+	// Buffer 2 so the second signal is never dropped even if the first is
+	// processed synchronously.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	if doStream && os.Getenv("RC_SRT_HOST") == "" {
 		logger.Warn("[srt] RC_SRT_HOST not set -- SRT streaming will be inactive")
@@ -143,22 +149,30 @@ func main() {
 			modem.RunStream(ctx, telemConn)
 		}()
 
-		// Connectivity watcher: close the stream valve on all pipelines when the
-		// modem loses internet, reopen and force an IDR when it reconnects.
+		// Connectivity watcher: pause the stream pipeline on all slots when the
+		// modem loses internet, resume and force an IDR when it reconnects.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			modem.WatchConnectivity(ctx, func(connected bool) {
 				for _, s := range cameraSlots {
-					s.SetStreamValve(!connected)
+					if connected {
+						s.ResumeStream()
+					} else {
+						s.PauseStream()
+					}
 				}
 				for _, s := range micSlots {
-					s.SetStreamValve(!connected)
+					if connected {
+						s.ResumeStream()
+					} else {
+						s.PauseStream()
+					}
 				}
 				if connected {
-					logger.Info("[stream] Modem connected — stream valve opened")
+					logger.Info("[stream] Modem connected — stream resumed")
 				} else {
-					logger.Info("[stream] Modem disconnected — stream valve closed")
+					logger.Info("[stream] Modem disconnected — stream paused")
 				}
 			})
 		}()
@@ -203,26 +217,40 @@ func main() {
 		}
 	}()
 
-	<-ctx.Done()
-	logger.Info("Signal received -- stopping pipelines...")
+	// ── Shutdown ─────────────────────────────────────────────────────────────
+	// Wait for the first Ctrl+C / SIGTERM.
+	<-sigCh
+	logger.Info("Signal received — stopping pipelines...")
 
-	// Restore default signal handling: a second Ctrl+C kills immediately.
-	stop()
+	// Cancel the main context: stops the control goroutine, udev listener,
+	// telemetry, ups/modem streams, and prevents new pipelines from starting.
+	cancel()
 
+	// Second signal → force-exit immediately (no matter the state of cleanup).
+	go func() {
+		<-sigCh
+		logger.Warn("Second signal received — forcing exit")
+		os.Exit(1)
+	}()
+
+	// Stop all running pipelines: source and stream are cancelled immediately;
+	// record receives EOS so that mp4mux flushes and filesink closes cleanly.
 	for _, s := range cameraSlots {
-		s.SendEOS()
+		s.Stop()
 	}
 	for _, s := range micSlots {
-		s.SendEOS()
+		s.Stop()
 	}
 
-	// Safety: if wg.Wait() doesn't return within 5 s (e.g. StartAll blocked
-	// on gst_element_get_state), force exit. The kernel releases all resources.
-	time.AfterFunc(5*time.Second, func() {
+	// Hard safety: if wg.Wait() still blocks (e.g. a CGo call is stuck or
+	// EOS propagation takes longer than expected), force exit. The kernel
+	// reclaims all resources.
+	exitTimer := time.AfterFunc(10*time.Second, func() {
 		logger.Warn("Shutdown timeout exceeded — forcing exit")
 		os.Exit(0)
 	})
 
 	wg.Wait()
+	exitTimer.Stop()
 	logger.Info("All pipelines stopped.")
 }

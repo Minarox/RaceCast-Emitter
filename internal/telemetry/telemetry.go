@@ -17,6 +17,12 @@ package telemetry
 //     SRTSOCKET s = srt_create_socket();
 //     if (s == SRT_INVALID_SOCK) return SRT_INVALID_SOCK;
 //
+//     // SRTO_TRANSTYPE must be set first: it resets all socket options to
+//     // their mode-specific defaults. SRTT_LIVE enables srt_sendmsg/recvmsg
+//     // (message API) and appropriate live-streaming buffer behaviour.
+//     int transtype = SRTT_LIVE;
+//     srt_setsockflag(s, SRTO_TRANSTYPE, &transtype, sizeof(transtype));
+//
 //     int lat = latency;
 //     srt_setsockflag(s, SRTO_LATENCY, &lat, sizeof(lat));
 //     srt_setsockflag(s, SRTO_STREAMID, streamid, (int)strlen(streamid));
