@@ -27,6 +27,15 @@ func Load(path string) {
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
+		// Strip inline comments: a '#' preceded by at least one space or tab
+		// (e.g. "30  # comment" → "30"). This matches common .env conventions
+		// without mangling hash characters embedded in values like passphrases.
+		for i := 1; i < len(value); i++ {
+			if value[i] == '#' && (value[i-1] == ' ' || value[i-1] == '\t') {
+				value = strings.TrimSpace(value[:i])
+				break
+			}
+		}
 		if os.Getenv(key) == "" {
 			os.Setenv(key, value)
 		}

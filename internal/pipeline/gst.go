@@ -159,14 +159,13 @@ var silenceMu sync.Mutex
 
 // GstPipeline manages a single GStreamer pipeline (capture + srtsink or filesink or both via tee).
 type GstPipeline struct {
-	mu          sync.Mutex
-	pipeline    *C.GstElement
-	pipelineStr string
-	ctx         context.Context
-	cancel      context.CancelFunc
-	running     bool
-	onError     func()
-	wg          sync.WaitGroup
+	mu       sync.Mutex
+	pipeline *C.GstElement
+	ctx      context.Context
+	cancel   context.CancelFunc
+	running  bool
+	onError  func()
+	wg       sync.WaitGroup
 }
 
 // newGstPipeline creates a GStreamer pipeline from a description string.
@@ -186,10 +185,9 @@ func newGstPipeline(parentCtx context.Context, pipelineStr string) (*GstPipeline
 
 	ctx, cancel := context.WithCancel(parentCtx)
 	return &GstPipeline{
-		pipeline:    gp,
-		pipelineStr: pipelineStr,
-		ctx:         ctx,
-		cancel:      cancel,
+		pipeline: gp,
+		ctx:      ctx,
+		cancel:   cancel,
 	}, nil
 }
 

@@ -149,7 +149,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 	micPort := map[string]int{} // uid → SRT port
 	if opts.Stream {
 		for _, mic := range cfg.Microphones {
-			if !mic.HasStream() {
+			if mic.Disabled || !mic.HasStream() {
 				continue
 			}
 			micPort[mic.UID] = srtPort

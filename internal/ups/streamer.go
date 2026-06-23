@@ -28,6 +28,7 @@ func RunStream(ctx context.Context, conn *telemetry.Conn) {
 		logger.Warn("[ups] Telemetry disabled: UPS unavailable (%v)", err)
 		return
 	}
+	defer Close()
 
 	ticker := time.NewTicker(telemetryInterval)
 	defer ticker.Stop()

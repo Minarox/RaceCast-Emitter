@@ -131,6 +131,13 @@ func runNMEAReader(f *os.File) {
 		}
 		pending = append(pending, line)
 	}
+	// Publish any incomplete epoch accumulated before the reader stopped
+	// (e.g. shutdown before the next GGA arrived).
+	if len(pending) > 0 {
+		nmeaMu.Lock()
+		nmeaEpoch = pending
+		nmeaMu.Unlock()
+	}
 	if err := scanner.Err(); err != nil {
 		logger.Warn("[modem] NMEA reader stopped: %v", err)
 	}

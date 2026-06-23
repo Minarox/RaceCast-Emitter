@@ -131,25 +131,26 @@ func NewConn(ctx context.Context, streamID string, onRecv func([]byte)) *Conn {
 // Send sends data over the SRT connection, connecting if necessary.
 // No-op (returns nil) if RC_SRT_HOST is not set.
 // On send failure the connection is reset; reconnect happens on the next call.
-// SRT supports concurrent send/recv on the same socket; no lock is held
-// during the actual C call.
+// The mutex is held across the C send call so that recvLoop cannot close the
+// socket while a send is in progress (use-after-free prevention).
 func (c *Conn) Send(data []byte) error {
-	if c.host == "" {
+	if c.host == "" || len(data) == 0 {
 		return nil
 	}
-	sock, err := c.ensureConnected()
+	c.mu.Lock()
+	sock, err := c.dialLocked()
 	if err != nil {
+		c.mu.Unlock()
 		return err
-	}
-	if len(data) == 0 {
-		return nil
 	}
 	ret := C.telem_send(sock, (*C.char)(unsafe.Pointer(&data[0])), C.int(len(data)))
 	if int(ret) < 0 {
 		errStr := C.GoString(C.srt_getlasterror_str())
-		c.resetSocket(sock)
+		c.resetLocked(sock)
+		c.mu.Unlock()
 		return fmt.Errorf("SRT send: %s", errStr)
 	}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -164,12 +165,9 @@ func (c *Conn) Close() {
 	}
 }
 
-// ensureConnected dials if not connected, starts the receive goroutine once,
-// and returns the active socket. Lock is held only during state transitions.
-func (c *Conn) ensureConnected() (C.SRTSOCKET, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+// dialLocked dials if not connected and starts the receive goroutine once.
+// c.mu must be held by the caller.
+func (c *Conn) dialLocked() (C.SRTSOCKET, error) {
 	if !c.dialed {
 		cHost := C.CString(c.host)
 		cSID := C.CString(c.streamID)
@@ -196,17 +194,21 @@ func (c *Conn) ensureConnected() (C.SRTSOCKET, error) {
 	return c.sock, nil
 }
 
-// resetSocket closes the socket and marks the connection as disconnected.
-// No-op if sock no longer matches the current active socket (guards against races
-// when both Send and recvLoop detect the same failure simultaneously).
-func (c *Conn) resetSocket(sock C.SRTSOCKET) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// resetLocked closes the socket and marks the connection as disconnected.
+// c.mu must be held. No-op if sock no longer matches the current active socket.
+func (c *Conn) resetLocked(sock C.SRTSOCKET) {
 	if c.dialed && c.sock == sock {
 		C.telem_close(sock)
 		c.dialed = false
 		c.recvStarted = false
 	}
+}
+
+// resetSocket is the public variant of resetLocked for callers that do not hold mu.
+func (c *Conn) resetSocket(sock C.SRTSOCKET) {
+	c.mu.Lock()
+	c.resetLocked(sock)
+	c.mu.Unlock()
 }
 
 // recvLoop reads incoming messages from the server and dispatches to onRecv.
