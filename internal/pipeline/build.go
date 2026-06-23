@@ -39,8 +39,12 @@ func srtCallerURI(port int, name, source string) string {
 }
 
 // BuildVideoStr builds the GStreamer pipeline description for a camera.
-// outputPath=="": stream only; doStream==false: record only; both: tee (H.264 record + AV1 stream).
-func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srtPort int) string {
+// When srtPort == 0 (record-only): simple source → H.264 → MP4, no tee, no valves.
+// When srtPort > 0: tee with two valve-gated branches:
+//   - recordvalve (before record queue): closing stops recording without pipeline restart.
+//   - streamvalve (after leaky stream queue): managed by WatchConnectivity at runtime.
+// outputPath="/dev/null" is valid when recording is disabled (recordvalve closed).
+func BuildVideoStr(cam config.Camera, dev, outputPath string, srtPort int) string {
 	flip := flipMethod(cam.VerticalFlip, cam.HorizontalFlip)
 
 	// Common source chain: v4l2 → decode → flip → NVMM NV12
@@ -108,28 +112,29 @@ func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srt
 		return fmt.Sprintf("srtsink name=srtsink uri=%q sync=false", srtCallerURI(srtPort, cam.Name, "camera"))
 	}
 
-	switch {
-	case outputPath != "" && !doStream:
-		// Record only: source → H.264 encoder → MP4
+	// Record-only: no tee, no valves — recording is always active.
+	if srtPort == 0 {
 		return source + " ! " + recordBranch()
-
-	case outputPath == "" && doStream:
-		// Stream only: source → AV1 encoder → SRT
-		return source + " ! " + streamEncoder() + " ! " + srtSink()
-
-	default: // record + stream simultaneously
-		// Two independent HW encoders: separate quality/resolution.
-		return source +
-			" ! tee name=t " +
-			"t. ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! " + recordBranch() + " " +
-			"t. ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 leaky=downstream ! " +
-			streamEncoder() + " ! " + srtSink()
 	}
+
+	// Record + stream: tee with two valve-gated branches.
+	// recordvalve sits before the record queue so that closing it (drop=true) causes
+	// tee to return immediately without blocking on a full queue.
+	// streamvalve sits after the leaky stream queue for symmetrical runtime control.
+	return source +
+		" ! tee name=t " +
+		"t. ! valve name=recordvalve drop=false ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! " + recordBranch() + " " +
+		"t. ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 leaky=downstream ! " +
+		"valve name=streamvalve drop=false ! " + streamEncoder() + " ! " + srtSink()
 }
 
 // BuildAudioStr builds the GStreamer pipeline description for a microphone.
-// outputPath=="": Opus/SRT only; doStream==false: AAC MP4 only; both: tee (AAC record + Opus stream).
-func BuildAudioStr(mic config.Microphone, alsaDev, outputPath string, doStream bool, srtPort int) string {
+// When outputPath == "" (stream-only): simple source → streamvalve → Opus → SRT, no tee.
+// When outputPath != "": tee with two valve-gated branches (AAC record + Opus stream).
+//   - recordvalve (before record queue): always open; reserved for future button control.
+//   - streamvalve (after leaky stream queue): managed by WatchConnectivity at runtime.
+// When srtPort == 0 the stream branch uses fakesink (stream valve still present).
+func BuildAudioStr(mic config.Microphone, alsaDev, outputPath string, srtPort int) string {
 	const (
 		blackFramerate = 25
 		blackBitrate   = 100_000
@@ -172,10 +177,14 @@ func BuildAudioStr(mic config.Microphone, alsaDev, outputPath string, doStream b
 		)
 	}
 
-	// Opus/SRT branch: raw Opus, one SRT message = one frame.
+	// Opus/SRT branch: streamvalve → Opus → SRT (or fakesink when srtPort == 0).
 	opusSRTBranch := func() string {
+		if srtPort == 0 {
+			return "valve name=streamvalve drop=false ! fakesink"
+		}
 		return fmt.Sprintf(
-			"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
+			"valve name=streamvalve drop=false ! "+
+				"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
 				"srtsink uri=%q sync=false",
 			mic.StreamBitrate(),
 			srtCallerURI(srtPort, mic.Name, "microphone"),
@@ -183,19 +192,16 @@ func BuildAudioStr(mic config.Microphone, alsaDev, outputPath string, doStream b
 	}
 
 	switch {
-	case outputPath != "" && !doStream:
-		return muxSink() + " " +
-			blackTrack() + " " +
-			source + " ! " + aacBranch()
-
-	case outputPath == "" && doStream:
-		return source + " ! " + opusSRTBranch()
-
-	default: // record + stream via tee
+	case outputPath != "": // record (with optional stream branch via streamvalve)
+		// Always use tee so the stream valve can be enabled at runtime.
+		// recordvalve sits before the record queue (fast drop when closed).
 		return muxSink() + " " +
 			blackTrack() + " " +
 			source + " ! tee name=at " +
-			"at. ! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! " + aacBranch() + " " +
+			"at. ! valve name=recordvalve drop=false ! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! " + aacBranch() + " " +
 			"at. ! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 leaky=downstream ! " + opusSRTBranch()
+
+	default: // stream-only: no MP4 mux, no black video track
+		return source + " ! " + opusSRTBranch()
 	}
 }

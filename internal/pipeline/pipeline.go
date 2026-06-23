@@ -112,6 +112,34 @@ func (s *Slot) ForceIDR(encoderName string) {
 	}
 }
 
+// SetStreamValve opens (drop=false) or closes (drop=true) the streaming valve.
+// When opening, forces an IDR frame so the receiver can decode immediately.
+// No-op if the pipeline is not running or has no streaming branch.
+func (s *Slot) SetStreamValve(drop bool) {
+	s.mu.Lock()
+	gp := s.gst
+	s.mu.Unlock()
+	if gp == nil {
+		return
+	}
+	gp.SetValve("streamvalve", drop)
+	if !drop {
+		gp.ForceIDR("avenc") // no-op on audio pipelines (element not found)
+	}
+}
+
+// SetRecordValve opens (drop=false) or closes (drop=true) the recording valve.
+// No-op if the pipeline is not running or has no record valve (e.g. record-only mode).
+func (s *Slot) SetRecordValve(drop bool) {
+	s.mu.Lock()
+	gp := s.gst
+	s.mu.Unlock()
+	if gp == nil {
+		return
+	}
+	gp.SetValve("recordvalve", drop)
+}
+
 type PollOptions struct {
 	Record bool
 	Stream bool
@@ -124,24 +152,6 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 
 	// All streams share one SRT port; receiver distinguishes by streamid.
 	srtPort := srtPortStart()
-	cameraPort := map[string]int{} // uid → SRT port
-	if opts.Stream {
-		for _, cam := range cfg.Cameras {
-			if cam.Disabled || !cam.HasStream() {
-				continue
-			}
-			cameraPort[cam.UID] = srtPort
-		}
-	}
-	micPort := map[string]int{} // uid → SRT port
-	if opts.Stream {
-		for _, mic := range cfg.Microphones {
-			if mic.Disabled || !mic.HasStream() {
-				continue
-			}
-			micPort[mic.UID] = srtPort
-		}
-	}
 
 	// startEntry holds the data needed to start a pipeline.
 	type startEntry struct {
@@ -149,7 +159,8 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		pipelineStr string
 		slot        *Slot
 		maxBitrate  int  // 0 for record-only or audio entries
-		isStreaming bool // true when the entry includes SRT streaming
+		isStreaming bool // true when the entry has an active SRT sink
+		doRecord    bool // true when the record branch should be active
 	}
 
 	var entries []startEntry
@@ -176,7 +187,9 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			continue
 		}
 		s.notFound = false
-		outputPath := ""
+		// Always provide a valid outputPath: "/dev/null" when recording is disabled
+		// so the record branch (valve closed) has a valid filesink location.
+		outputPath := "/dev/null"
 		if opts.Record {
 			now := time.Now()
 			dir := filepath.Join(recordsDir, now.Format("2006-01-02"))
@@ -186,8 +199,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			}
 			outputPath = filepath.Join(dir, fmt.Sprintf("%s_%s_video.mp4", now.Format("15-04-05"), sanitize(cam.Name)))
 		}
+		port := 0
+		if doStream {
+			port = srtPort
+		}
 		label := "camera:" + sanitize(cam.Name)
-		port := cameraPort[cam.UID]
 		switch {
 		case opts.Record && doStream:
 			logger.Info("[%s] %s -> record + AV1/SRT stream (port %d)", label, dev, port)
@@ -198,10 +214,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 		entries = append(entries, startEntry{
 			label:       label,
-			pipelineStr: BuildVideoStr(cam, dev, outputPath, doStream, port),
+			pipelineStr: BuildVideoStr(cam, dev, outputPath, port),
 			slot:        s,
 			maxBitrate:  cam.StreamBitrate(),
 			isStreaming: doStream,
+			doRecord:    opts.Record,
 		})
 	}
 
@@ -227,6 +244,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			continue
 		}
 		s.notFound = false
+		// For audio, outputPath="" means stream-only (no mp4mux/blacktrack).
 		outputPath := ""
 		if opts.Record {
 			now := time.Now()
@@ -237,8 +255,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			}
 			outputPath = filepath.Join(dir, fmt.Sprintf("%s_%s_audio.mp4", now.Format("15-04-05"), sanitize(mic.Name)))
 		}
+		port := 0
+		if doStream {
+			port = srtPort
+		}
 		label := "mic:" + sanitize(mic.Name)
-		port := micPort[mic.UID]
 		switch {
 		case opts.Record && doStream:
 			logger.Info("[%s] %s -> record + Opus/SRT stream (port %d)", label, alsaDev, port)
@@ -249,8 +270,10 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 		entries = append(entries, startEntry{
 			label:       label,
-			pipelineStr: BuildAudioStr(mic, alsaDev, outputPath, doStream, port),
+			pipelineStr: BuildAudioStr(mic, alsaDev, outputPath, port),
 			slot:        s,
+			doRecord:    opts.Record,
+			isStreaming: doStream,
 		})
 	}
 
@@ -309,7 +332,12 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			return
 		}
 		pe.slot.activate(pe.label, pe.gp, wg)
+		// Apply initial valve states based on run mode.
+		if !pe.doRecord {
+			pe.slot.SetRecordValve(true) // close record branch (stream-only mode)
+		}
 		if !pe.isStreaming {
+			pe.slot.SetStreamValve(true) // close stream branch (no SRT configured)
 			return
 		}
 		// Intra-refresh: set on AV1 encoder after startup.

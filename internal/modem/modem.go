@@ -51,9 +51,17 @@ func Open() error {
 		return nil
 	}
 
-	conn, err := dbus.SystemBus()
+	conn, err := dbus.SystemBusPrivate()
 	if err != nil {
 		return fmt.Errorf("D-Bus system bus: %w", err)
+	}
+	if err := conn.Auth(nil); err != nil {
+		conn.Close()
+		return fmt.Errorf("D-Bus auth: %w", err)
+	}
+	if err := conn.Hello(); err != nil {
+		conn.Close()
+		return fmt.Errorf("D-Bus Hello: %w", err)
 	}
 	dbusConn = conn
 
@@ -365,6 +373,45 @@ func BitrateAdvisory(maxBitrate int) int {
 	return BitrateAdvisoryFromStats(maxBitrate, stats)
 }
 
+// WatchConnectivity calls onChange whenever modem internet connectivity changes.
+// connected=true when signal quality > 0 and a data technology is active.
+// Polls every 2 s. Stops when ctx is cancelled.
+// If no modem responds after 10 s, assumes no modem on this device and returns
+// without calling onChange (stream valves stay in their default open state).
+func WatchConnectivity(ctx context.Context, onChange func(connected bool)) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var last *bool
+	noModemCount := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		stats, err := GetSignalStats()
+		if err != nil {
+			noModemCount++
+			if noModemCount >= 5 {
+				// 10 s without any modem response — assume no modem on this device.
+				logger.Info("[modem] No modem detected — stream valve control disabled")
+				return
+			}
+			continue
+		}
+		noModemCount = 0
+
+		connected := stats.Quality > 0 && stats.Tech != ""
+		if last == nil || *last != connected {
+			last = &connected
+			onChange(connected)
+		}
+	}
+}
+
 // Run reads and displays modem data every second until ctx is cancelled.
 func Run(ctx context.Context) {
 	if err := Open(); err != nil {
@@ -379,6 +426,13 @@ func Run(ctx context.Context) {
 
 	first := true
 	for {
+		// Check cancellation before any blocking work.
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		if !first {
 			// Move up one line and erase it to overwrite the previous value.
 			fmt.Fprint(os.Stdout, "\033[1A\033[2K")

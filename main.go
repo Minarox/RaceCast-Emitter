@@ -142,6 +142,26 @@ func main() {
 			defer wg.Done()
 			modem.RunStream(ctx, telemConn)
 		}()
+
+		// Connectivity watcher: close the stream valve on all pipelines when the
+		// modem loses internet, reopen and force an IDR when it reconnects.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			modem.WatchConnectivity(ctx, func(connected bool) {
+				for _, s := range cameraSlots {
+					s.SetStreamValve(!connected)
+				}
+				for _, s := range micSlots {
+					s.SetStreamValve(!connected)
+				}
+				if connected {
+					logger.Info("[stream] Modem connected — stream valve opened")
+				} else {
+					logger.Info("[stream] Modem disconnected — stream valve closed")
+				}
+			})
+		}()
 	}
 
 	events, err := udev.Listen(ctx)
