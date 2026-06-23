@@ -168,7 +168,7 @@ type Data struct {
 	Percentage float64 // 0–100 %
 }
 
-// Read lit les valeurs courantes de l'UPS.
+// Read returns the current UPS measurements.
 func Read() Data {
 	v := float64(read(regVoltage)>>3) * 0.004
 	a := float64(int16(read(regCurrent))) * currentLSB / 1000

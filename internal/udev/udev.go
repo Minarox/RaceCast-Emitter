@@ -14,13 +14,12 @@ type Event struct {
 	Subsystem string // "video4linux", "sound", ...
 }
 
-// Listen opens a KOBJECT_UEVENT netlink socket and sends video and audio
-// subsystem events on the returned channel.
-// The channel is closed when ctx is cancelled.
+// Listen opens a KOBJECT_UEVENT netlink socket and sends video/audio events
+// on the returned channel. The channel is closed when ctx is cancelled.
 func Listen(ctx context.Context) (<-chan Event, error) {
 	fd, err := syscall.Socket(
 		syscall.AF_NETLINK,
-		// SOCK_NONBLOCK: non-blocking reads allow cancellation via ctx.
+		// SOCK_NONBLOCK: non-blocking so ctx can cancel.
 		syscall.SOCK_RAW|syscall.SOCK_CLOEXEC|syscall.SOCK_NONBLOCK,
 		syscall.NETLINK_KOBJECT_UEVENT,
 	)

@@ -151,10 +151,8 @@ func main() {
 
 	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream}
 
-	// The control goroutine (udev + poll) is NOT tracked in wg.
-	// wg only tracks pipeline goroutines (via activate()).
-	// This prevents wg.Wait() from blocking on a CGo gst_element_get_state call
-	// in StartAll — the control goroutine exits on its own via ctx.Done().
+	// The control goroutine is NOT tracked in wg (only pipeline goroutines are).
+	// This prevents wg.Wait() from blocking on StartAll's CGo get_state call.
 	go func() {
 		pipeline.Poll(ctx, pollOpts, cfg, cameraSlots, micSlots, &wg)
 		for {
@@ -188,8 +186,7 @@ func main() {
 	<-ctx.Done()
 	logger.Info("Signal received -- stopping pipelines...")
 
-	// Restore default signal behaviour: a second Ctrl+C kills the process
-	// immediately if the graceful shutdown stalls.
+	// Restore default signal handling: a second Ctrl+C kills immediately.
 	stop()
 
 	for _, s := range cameraSlots {

@@ -1,13 +1,9 @@
 package pipeline
 
-// feedback.go manages the local ABR quality mechanism for streaming cameras:
-// WatchLocalStats polls the srtsink element's "stats" GstStructure property
-// directly — RTT, bandwidth and packet-loss are already known locally because
-// the SRT protocol exchanges ACK/NAK messages internally. No network
-// round-trip to the server is needed for adaptive bitrate control.
-//
-// IDR requests from the receiver arrive via the shared bidirectional telemetry
-// SRT connection (see internal/telemetry and Slot.ForceIDR in pipeline.go).
+// feedback.go manages local ABR for streaming cameras.
+// WatchLocalStats polls srtsink's "stats" GstStructure directly (RTT, bandwidth,
+// packet-loss are known locally via SRT ACK/NAK — no server round-trip needed).
+// IDR requests arrive via the shared bidirectional telemetry connection.
 
 import (
 	"time"
@@ -37,11 +33,8 @@ type localStats struct {
 
 // ── Local ABR (no network round-trip) ────────────────────────────────────────
 
-// WatchLocalStats starts a goroutine that reads SRT statistics directly from
-// the srtsink GStreamer element every fbLocalInterval and adapts the AV1
-// encoder bitrate. The stats (RTT, bandwidth, packet loss) are already known
-// locally: the SRT protocol maintains them via its ACK/NAK exchange.
-// sinkName must match the name= in the pipeline string (e.g., "srtsink").
+// WatchLocalStats starts an ABR goroutine reading SRT stats from sinkName every
+// fbLocalInterval and adapting the AV1 encoder bitrate (no server round-trip).
 func (p *GstPipeline) WatchLocalStats(encoderName, sinkName string, minBitrate, maxBitrate int) {
 	go p.localStatsLoop(encoderName, sinkName, minBitrate, maxBitrate)
 }
@@ -79,9 +72,8 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 			lossPct = 100.0 * float64(deltaLost) / total
 		}
 
-		// Modem-based pre-emptive ceiling: limits the ABR upper bound based on
-		// the cellular technology and signal quality, before SRT stats degrade.
-		// When the modem is unavailable the ceiling equals maxBitrate (no effect).
+		// Modem ceiling: pre-emptive upper bound based on radio tech/quality,
+		// before SRT stats degrade. Equals maxBitrate when modem is unavailable.
 		effectiveMax := maxBitrate
 		modemStats, modemErr := modem.GetSignalStats()
 		if modemErr == nil {
@@ -91,8 +83,7 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 					encoderName, effectiveMax, modemStats.Tech, modemStats.Quality)
 				prevEffectiveMax = effectiveMax
 			}
-			// Enforce the ceiling immediately on a downgrade (e.g. LTE → UMTS)
-			// even when SRT stats are still clean.
+			// Enforce ceiling immediately on downgrade (e.g. LTE → UMTS).
 			if currentBitrate > effectiveMax {
 				logger.Info("[abr:%s] Modem ceiling enforced: %d → %d bps",
 					encoderName, currentBitrate, effectiveMax)

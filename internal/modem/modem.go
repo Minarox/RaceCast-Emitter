@@ -15,8 +15,7 @@ import (
 	"racecast-emitter/internal/logger"
 )
 
-// defaultNMEAPort is the serial port that emits NMEA frames from the GNSS.
-// The Quectel RM520N-GL exposes its GNSS on the second USB serial port (/dev/ttyUSB1).
+// defaultNMEAPort is the GNSS serial port (Quectel RM520N-GL: /dev/ttyUSB1).
 // Configurable via RC_MODEM_NMEA_PORT.
 const defaultNMEAPort = "/dev/ttyUSB1"
 
@@ -34,13 +33,9 @@ var (
 	nmeaFile *os.File
 )
 
-// Open initializes the modem and starts reading NMEA from the serial port.
-// Enables gps-unmanaged mode in ModemManager (AT+QGPS=1 for Quectel);
-// the GNSS then manages its fixes autonomously and sends NMEA frames on the
-// dedicated serial port. Idempotent.
-//
-// Environment variables:
-//   - RC_MODEM_NMEA_PORT: NMEA serial port (default "/dev/ttyUSB1")
+// Open initializes the modem and starts the NMEA serial reader.
+// Enables gps-unmanaged mode (AT+QGPS=1); the GNSS sends frames autonomously.
+// RC_MODEM_NMEA_PORT overrides the default port. Idempotent.
 func Open() error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -70,8 +65,8 @@ func Open() error {
 	}
 	loc = l
 
-	// gps-unmanaged: ModemManager sends AT+QGPS=1 but does not capture frames—
-	// we read them ourselves from the serial port. signalLocation=false.
+	// gps-unmanaged: ModemManager sends AT+QGPS=1 but doesn't capture frames;
+	// we read them from the serial port. signalLocation=false.
 	if err := loc.Setup([]modemmanager.MMModemLocationSource{
 		modemmanager.MmModemLocationSourceGpsUnmanaged,
 	}, false); err != nil {
@@ -119,8 +114,7 @@ func runNMEAReader(f *os.File) {
 			continue
 		}
 
-		// New GGA frame = start of a new GPS epoch.
-		// Publish the previous epoch before starting the new one.
+		// New GGA frame = new epoch; publish the previous one first.
 		if len(line) >= 6 && line[3:6] == "GGA" && len(pending) > 0 {
 			snap := make([]string, len(pending))
 			copy(snap, pending)
@@ -131,8 +125,7 @@ func runNMEAReader(f *os.File) {
 		}
 		pending = append(pending, line)
 	}
-	// Publish any incomplete epoch accumulated before the reader stopped
-	// (e.g. shutdown before the next GGA arrived).
+	// Publish any incomplete epoch accumulated before the reader stopped.
 	if len(pending) > 0 {
 		nmeaMu.Lock()
 		nmeaEpoch = pending
@@ -195,19 +188,11 @@ func GetSignalStats() (SignalStats, error) {
 	}, nil
 }
 
-// BitrateAdvisoryFromStats returns the recommended maximum streaming bitrate
-// (bps) based on the provided cellular signal statistics. It acts as a
-// pre-emptive ceiling that complements the reactive SRT-based ABR: instead of
-// waiting for packet loss to appear, it pre-limits the bitrate when the radio
-// link capacity is structurally lower than maxBitrate.
-//
-// Design principles:
-//   - 5G NR and 4G LTE never receive a technology penalty (both exceed 12 Mbps).
-//   - HSPA / HSPA+ (3G+) receives a small ceiling (~85 %).
-//   - UMTS 3G base is capped more aggressively (~55 %).
-//   - 2G (GPRS, EDGE) is reduced to the minimum floor (20 %).
-//   - Signal quality below 50 % triggers an additional pre-emptive reduction;
-//     above 50 % the SRT ABR is sufficient to handle transient losses.
+// BitrateAdvisoryFromStats returns the recommended max streaming bitrate (bps)
+// based on cellular signal stats. Pre-emptive ceiling complementing reactive SRT ABR:
+// caps bitrate when radio capacity is structurally below maxBitrate.
+// 5G/LTE: no penalty; HSPA+: 85%; UMTS: 55%; 2G: 20% floor.
+// Signal <50%: additional reduction; above 50% SRT ABR is sufficient.
 func BitrateAdvisoryFromStats(maxBitrate int, s SignalStats) int {
 	tech := strings.ToLower(s.Tech)
 
@@ -227,9 +212,7 @@ func BitrateAdvisoryFromStats(maxBitrate int, s SignalStats) int {
 		techFactor = 0.20
 	}
 
-	// Signal quality modifier: applied only below 50 %.
-	// Above 50 % the SRT layer handles transient losses without help;
-	// below 50 % a pre-emptive reduction avoids filling the SRT send buffer.
+	// Signal modifier: applied below 50%; above that SRT handles transient losses.
 	var sigFactor float64
 	switch {
 	case s.Quality >= 50:

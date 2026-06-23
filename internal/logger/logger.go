@@ -16,9 +16,8 @@ var (
 	mu      sync.Mutex
 	logFile *os.File
 
-	// consoleOut is a dup of fd 1 created before any GStreamer call.
-	// It keeps writing to the original terminal even when the pipeline package
-	// temporarily redirects fd 1 to /dev/null to silence Nvidia driver noise.
+	// consoleOut is a dup of fd 1 saved before any GStreamer call, so logging
+	// keeps working when fd 1 is redirected to /dev/null for Nvidia noise.
 	consoleOut *os.File
 
 	infoFn  func(string, ...any)
@@ -28,8 +27,7 @@ var (
 )
 
 func init() {
-	// dup(1) creates a new fd pointing to the same terminal as fd 1,
-	// unaffected by later dup2(/dev/null, 1) calls.
+	// dup(1) before any dup2(/dev/null, 1) calls so consoleOut always points to the terminal.
 	if fd, err := syscall.Dup(int(os.Stdout.Fd())); err == nil {
 		syscall.CloseOnExec(fd) // do not inherit in child processes
 		consoleOut = os.NewFile(uintptr(fd), "stdout")

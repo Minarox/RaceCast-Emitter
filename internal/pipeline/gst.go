@@ -153,8 +153,8 @@ func init() {
 	C.gst_debug_set_active(C.FALSE)
 }
 
-// silenceMu serialises all silence_begin/silence_end operations in this package.
-// See StartAll for the detailed explanation of the race condition it prevents.
+// silenceMu serialises all silence_begin/silence_end calls.
+// Prevents fd-1 being permanently lost when goroutines dup(1) concurrently.
 var silenceMu sync.Mutex
 
 // GstPipeline manages a single GStreamer pipeline (capture + srtsink or filesink or both via tee).
@@ -169,8 +169,7 @@ type GstPipeline struct {
 }
 
 // newGstPipeline creates a GStreamer pipeline from a description string.
-// The provided ctx is used as parent: cancelling it also cancels watchBus()
-// even if the pipeline was just started and gp.Cancel() has not been called yet.
+// ctx is parent: cancelling it also cancels watchBus().
 func newGstPipeline(parentCtx context.Context, pipelineStr string) (*GstPipeline, error) {
 	cStr := C.CString(pipelineStr)
 	defer C.free(unsafe.Pointer(cStr))
@@ -232,15 +231,9 @@ func (p *GstPipeline) startInner() error {
 	return nil
 }
 
-// StartAll starts multiple pipelines in parallel under a single global silencing window.
-//
-// Problem with individual concurrent starts: each goroutine would dup(1),
-// redirect fd 1 to /dev/null, call get_state (~1 s), then restore fd 1.
-// If G2 calls dup(1) while G1 has already redirected fd 1 to /dev/null,
-// G2 saves /dev/null and restores it — stdout is permanently lost.
-//
-// StartAll applies a single dup2: all blocking get_state calls execute
-// in parallel within this one silencing window.
+// StartAll starts multiple pipelines in parallel under a single silence window.
+// Prevents the fd-1 race where concurrent goroutines dup(1) after it has been
+// redirected to /dev/null, permanently losing stdout.
 // Returns errors indexed on the input slice (nil = success).
 func StartAll(pipelines []*GstPipeline) []error {
 	silenceMu.Lock()
@@ -268,6 +261,46 @@ func StartAll(pipelines []*GstPipeline) []error {
 	// Brief delay for Nvidia threads that may still write after get_state PLAYING.
 	time.Sleep(100 * time.Millisecond)
 	return errs
+}
+
+// StartEach starts all pipelines in parallel within one silence window, calling
+// onReady(i, err) per pipeline as soon as it reaches GST_STATE_PLAYING (or fails).
+// Faster pipelines (e.g. audio) are activated immediately while slower ones
+// (e.g. nvv4l2av1enc) are still initialising.
+// NOTE: onReady is called while silenceMu is held — do NOT call Free/SetNull inside
+// (deadlock). Use "go gp.Free()" instead.
+func StartEach(pipelines []*GstPipeline, onReady func(int, error)) {
+	if len(pipelines) == 0 {
+		return
+	}
+	silenceMu.Lock()
+	defer silenceMu.Unlock()
+	var out, errfd C.int
+	C.silence_begin(&out, &errfd)
+	defer func() {
+		// Brief delay for Nvidia threads that may still write after get_state PLAYING.
+		time.Sleep(100 * time.Millisecond)
+		C.silence_end(out, errfd)
+	}()
+
+	var sg sync.WaitGroup
+	for i, gp := range pipelines {
+		i, gp := i, gp
+		sg.Add(1)
+		go func() {
+			defer sg.Done()
+			gp.mu.Lock()
+			if gp.running {
+				gp.mu.Unlock()
+				onReady(i, nil)
+				return
+			}
+			err := gp.startInner()
+			gp.mu.Unlock()
+			onReady(i, err)
+		}()
+	}
+	sg.Wait()
 }
 
 // SendEOS injects an EOS event at the pipeline source.
@@ -407,9 +440,8 @@ func (p *GstPipeline) TrySetIntraRefresh(encoderName string, period int) {
 	}
 }
 
-// GetSRTSinkStats reads cumulative SRT statistics from the named srtsink element.
-// Returns instantaneous RTT (ms) and bandwidth (Mbps) alongside cumulative
-// packet-sent and packet-loss totals for interval-delta computation.
+// GetSRTSinkStats reads cumulative SRT stats from the named srtsink element.
+// Returns RTT (ms), bandwidth (Mbps), cumulative packets sent and lost.
 func (p *GstPipeline) GetSRTSinkStats(sinkName string) (rttMS, bandwidthMbps float64, pktSentTotal int64, pktLossTotal int) {
 	cName := C.CString(sinkName)
 	defer C.free(unsafe.Pointer(cName))

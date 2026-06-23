@@ -24,30 +24,22 @@ func flipMethod(vertical, horizontal bool) int {
 	}
 }
 
-// srtCallerURI builds an SRT URI in caller mode (Jetson → server).
-// streamid encodes device metadata as "name:source" (e.g. "Route:camera");
-// the receiver reads it from SRTO_STREAMID to create LiveKit tracks automatically.
+// srtCallerURI builds an SRT caller URI; streamid = "name:source" (e.g. "Route:camera").
 func srtCallerURI(port int, name, source string) string {
 	host := os.Getenv("RC_SRT_HOST")
 	latency := envInt("RC_SRT_LATENCY", 800)
 	streamID := name + ":" + source
-	// iptos=136 = DSCP AF41 (0x88): marks UDP packets as video streaming traffic
-	// so intermediate routers/LTE schedulers can apply QoS prioritisation.
+	// iptos=136 = DSCP AF41: marks packets as video streaming for router QoS.
 	uri := fmt.Sprintf("srt://%s:%d?streamid=%s&latency=%d&mode=caller&iptos=136", host, port, streamID, latency)
 	if p := strings.TrimSpace(os.Getenv("RC_SRT_PASSPHRASE")); p != "" {
-		// pbkeylen=32 → AES-256 session key derived from the passphrase.
+		// pbkeylen=32 → AES-256.
 		uri += "&passphrase=" + url.QueryEscape(p) + "&pbkeylen=32"
 	}
 	return uri
 }
 
 // BuildVideoStr builds the GStreamer pipeline description for a camera.
-//
-//   - outputPath=="" → SRT AV1 stream only (srtsink)
-//   - doStream==false → H.264 MP4 recording only (filesink)
-//   - both            → shared encoder via tee:
-//     record branch → mp4mux → filesink
-//     stream branch → srtsink (raw AV1 OBU stream)
+// outputPath=="": stream only; doStream==false: record only; both: tee (H.264 record + AV1 stream).
 func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srtPort int) string {
 	flip := flipMethod(cam.VerticalFlip, cam.HorizontalFlip)
 
@@ -87,14 +79,11 @@ func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srt
 		)
 	}
 
-	// Stream AV1 encoder (reduced resolution/bitrate from stream: config).
-	// name=avenc: allows runtime bitrate/IDR control via g_object_set (SetBitrate, ForceIDR).
-	// insert-seq-hdr=true: each IDR embeds the AV1 sequence header → instant reconnect.
-	// av1parse align=tu: each buffer = one temporal unit = one complete frame.
+	// AV1 stream encoder (reduced resolution from stream: config).
+	// name=avenc: runtime bitrate/IDR control; insert-seq-hdr=true: instant reconnect.
 	streamEncoder := func() string {
 		if intraRefreshPeriod() > 0 {
-			// Intra-refresh mode: periodic IDR omitted; TrySetIntraRefresh applies
-			// EnableIntraRefresh via g_object_set after pipeline creation.
+				// Intra-refresh: periodic IDR replaced by TrySetIntraRefresh after creation.
 			return fmt.Sprintf(
 				"nvvidconv ! "+
 					"video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12 ! "+
@@ -139,12 +128,7 @@ func BuildVideoStr(cam config.Camera, dev, outputPath string, doStream bool, srt
 }
 
 // BuildAudioStr builds the GStreamer pipeline description for a microphone.
-//
-//   - outputPath=="" → raw Opus over SRT only
-//   - doStream==false → AAC MP4 recording only (with black SMPTE video track)
-//   - both            → tee on the audio source:
-//     record branch → avenc_aac → mp4mux → filesink
-//     stream branch → opusenc → srtsink (raw Opus, no container)
+// outputPath=="": Opus/SRT only; doStream==false: AAC MP4 only; both: tee (AAC record + Opus stream).
 func BuildAudioStr(mic config.Microphone, alsaDev, outputPath string, doStream bool, srtPort int) string {
 	const (
 		blackFramerate = 25
@@ -159,7 +143,7 @@ func BuildAudioStr(mic config.Microphone, alsaDev, outputPath string, doStream b
 		alsaDev, mic.SampleRate, mic.Channels,
 	)
 
-	// Black video track for SMPTE timecode (recording only).
+	// Black H.264 video track for SMPTE timecode (recording only).
 	blackTrack := func() string {
 		return fmt.Sprintf(
 			"videotestsrc pattern=black is-live=true ! "+
@@ -188,7 +172,7 @@ func BuildAudioStr(mic config.Microphone, alsaDev, outputPath string, doStream b
 		)
 	}
 
-	// Opus → SRT branch (streaming): raw Opus, each SRT message = one Opus frame.
+	// Opus/SRT branch: raw Opus, one SRT message = one frame.
 	opusSRTBranch := func() string {
 		return fmt.Sprintf(
 			"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+

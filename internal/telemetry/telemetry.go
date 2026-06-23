@@ -1,10 +1,8 @@
 package telemetry
 
 // telemetry.go manages the single bidirectional SRT telemetry connection.
-// The emitter sends telemetry envelopes (UPS, modem/GPS) to the receiver,
-// and receives IDR request signals back from the receiver on the same socket.
-// Each envelope carries a "type" field so the receiver can route without
-// needing separate SRT streamids.
+// The emitter sends typed envelopes (UPS, modem/GPS) to the receiver and
+// receives IDR requests back on the same socket.
 
 // #cgo pkg-config: srt
 // #include <srt/srt.h>
@@ -27,8 +25,7 @@ package telemetry
 //     int tos = 0x88;
 //     srt_setsockflag(s, SRTO_IPTOS, &tos, sizeof(tos));
 //
-//     // SRTO_RCVTIMEO: srt_recvmsg returns SRT_ERROR after 2 s of inactivity
-//     // so the receive goroutine can check for context cancellation.
+//     // SRTO_RCVTIMEO: unblocks recvmsg after 2 s for ctx cancellation check.
 //     int rcvtimeo = 2000;
 //     srt_setsockflag(s, SRTO_RCVTIMEO, &rcvtimeo, sizeof(rcvtimeo));
 //
@@ -92,8 +89,8 @@ import (
 )
 
 // Conn is the single bidirectional SRT telemetry connection (streamid "telemetry").
-// Outgoing: typed envelopes {"type":"ups","data":{...}} / {"type":"modem","data":{...}}.
-// Incoming: IDR request messages {"type":"idr","camera":"..."} from the receiver.
+// Outgoing: typed envelopes {"type":"ups",...} / {"type":"modem",...}.
+// Incoming: IDR requests {"type":"idr","camera":"..."} from the receiver.
 type Conn struct {
 	// immutable after creation
 	ctx        context.Context
@@ -111,11 +108,8 @@ type Conn struct {
 	recvStarted bool
 }
 
-// NewConn creates a Conn for the given streamid.
-// Reads RC_SRT_HOST, RC_SRT_PORT (default 9000) and RC_SRT_LATENCY (default 800).
-// onRecv is called (in a dedicated goroutine) for each message received from
-// the server; pass nil if no incoming messages are expected.
-// If RC_SRT_HOST is not set, Send is a no-op.
+// NewConn creates a Conn for streamID, reading RC_SRT_HOST/PORT/LATENCY.
+// onRecv is called per incoming message (nil = no receive). No-op if RC_SRT_HOST unset.
 func NewConn(ctx context.Context, streamID string, onRecv func([]byte)) *Conn {
 	return &Conn{
 		ctx:        ctx,
@@ -128,11 +122,8 @@ func NewConn(ctx context.Context, streamID string, onRecv func([]byte)) *Conn {
 	}
 }
 
-// Send sends data over the SRT connection, connecting if necessary.
-// No-op (returns nil) if RC_SRT_HOST is not set.
-// On send failure the connection is reset; reconnect happens on the next call.
-// The mutex is held across the C send call so that recvLoop cannot close the
-// socket while a send is in progress (use-after-free prevention).
+// Send sends data over the SRT connection, dialing if needed.
+// No-op if RC_SRT_HOST is unset. Resets the connection on send failure.
 func (c *Conn) Send(data []byte) error {
 	if c.host == "" || len(data) == 0 {
 		return nil
@@ -166,7 +157,7 @@ func (c *Conn) Close() {
 }
 
 // dialLocked dials if not connected and starts the receive goroutine once.
-// c.mu must be held by the caller.
+// c.mu must be held.
 func (c *Conn) dialLocked() (C.SRTSOCKET, error) {
 	if !c.dialed {
 		cHost := C.CString(c.host)
@@ -211,9 +202,8 @@ func (c *Conn) resetSocket(sock C.SRTSOCKET) {
 	c.mu.Unlock()
 }
 
-// recvLoop reads incoming messages from the server and dispatches to onRecv.
-// Exits when the connection closes, on error, or when ctx is cancelled.
-// SRTO_RCVTIMEO = 2 s means telem_recv unblocks periodically so ctx can fire.
+// recvLoop reads incoming messages and dispatches to onRecv.
+// SRTO_RCVTIMEO=2s lets telem_recv unblock periodically so ctx can fire.
 func (c *Conn) recvLoop(sock C.SRTSOCKET) {
 	buf := make([]byte, 4096)
 

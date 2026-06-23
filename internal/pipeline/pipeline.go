@@ -30,13 +30,10 @@ func envInt(key string, defaultVal int) int {
 func videoBitrate() int { return envInt("RC_VIDEO_BITRATE", 12_000_000) }
 func audioBitrate() int { return envInt("RC_AUDIO_BITRATE", 192_000) }
 
-// intraRefreshPeriod returns the configured intra-refresh period in frames.
-// Returns 0 when RC_VIDEO_INTRA_REFRESH is unset or zero (feature disabled).
+// intraRefreshPeriod returns the intra-refresh period in frames (0 = disabled).
 func intraRefreshPeriod() int { return envInt("RC_VIDEO_INTRA_REFRESH", 0) }
 
-// srtPortStart returns the SRT port from RC_SRT_PORT.
-// All streams (cameras and microphones) connect on the same port;
-// the receiver differentiates connections by SRT streamid ("name:source").
+// srtPortStart returns RC_SRT_PORT; all streams share the same port (differentiated by SRT streamid).
 func srtPortStart() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RC_SRT_PORT"))); err == nil && n > 0 {
 		return n
@@ -61,13 +58,10 @@ func (s *Slot) IsRunning() bool {
 	return s.gst != nil
 }
 
-// activate registers an already-started GstPipeline in the slot and launches
-// a goroutine that signals pipeline stop via wg.Done(), then releases GStreamer
-// resources in the background without blocking the shutdown path.
-// If ctx is already cancelled (e.g. Ctrl+C during StartAll), the pipeline is
-// freed in the background without adding to wg.
+// activate registers gp in the slot, wires wg.Done() and background cleanup.
+// If ctx is already cancelled, frees the pipeline without adding to wg.
 func (s *Slot) activate(label string, gp *GstPipeline, wg *sync.WaitGroup) {
-	// Ctx cancelled during StartAll: don't register in wg.
+	// Context already cancelled: skip wg registration.
 	select {
 	case <-gp.ctx.Done():
 		logger.Info("[%s] Context cancelled during startup -- pipeline discarded", label)
@@ -89,10 +83,7 @@ func (s *Slot) activate(label string, gp *GstPipeline, wg *sync.WaitGroup) {
 			s.gst = nil
 		}
 		s.mu.Unlock()
-		// SetNull and Free in background: don't block wg.Done().
-		// gst_element_set_state(NULL) may block while srtsink finishes
-		// an in-progress reconnect attempt. The slot is already nil so
-		// a new pipeline can be created immediately.
+		// SetNull/Free in background: srtsink may block on reconnect.
 		go func() {
 			gp.SetNull()
 			gp.Free()
@@ -106,15 +97,12 @@ func (s *Slot) SendEOS() {
 	s.mu.Unlock()
 	if gp != nil {
 		gp.SendEOS()
-		// Cancel the internal context to unblock watchBus() immediately.
-		// Without this, watchBus() waits for an EOS bus message that srtsink
-		// in reconnect mode never produces, stalling wg.Wait() indefinitely.
+		// Cancel unblocks watchBus(): srtsink in reconnect mode never produces EOS.
 		gp.Cancel()
 	}
 }
 
-// ForceIDR forces an immediate IDR frame on the running pipeline's AV1 encoder.
-// No-op if the pipeline is not currently running.
+// ForceIDR forces an IDR frame on the AV1 encoder. No-op if not running.
 func (s *Slot) ForceIDR(encoderName string) {
 	s.mu.Lock()
 	gp := s.gst
@@ -134,8 +122,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		return
 	}
 
-	// SRT port: all streams connect on the same port.
-	// The receiver differentiates connections by SRT streamid.
+	// All streams share one SRT port; receiver distinguishes by streamid.
 	srtPort := srtPortStart()
 	cameraPort := map[string]int{} // uid → SRT port
 	if opts.Stream {
@@ -156,7 +143,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 	}
 
-	// startEntry regroupe tout ce qui est nécessaire pour démarrer un pipeline.
+	// startEntry holds the data needed to start a pipeline.
 	type startEntry struct {
 		label       string
 		pipelineStr string
@@ -308,25 +295,24 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		return
 	}
 
-	// Phase 2: start all pipelines in parallel under a single global silencing window.
+	// Start all pipelines in parallel; activate each on GST_STATE_PLAYING.
+	// Audio (~100 ms) starts while camera encoders (3–5 s) are still warming up.
 	gpList := make([]*GstPipeline, len(preps))
 	for i, pe := range preps {
 		gpList[i] = pe.gp
 	}
-	errs := StartAll(gpList)
-
-	// Phase 3: activate slots and start quality-enhancement goroutines.
-	for i, pe := range preps {
-		if errs[i] != nil {
-			logger.Error("[%s] Failed to start pipeline: %v", pe.label, errs[i])
-			pe.gp.Free()
-			continue
+	StartEach(gpList, func(i int, err error) {
+		pe := preps[i]
+		if err != nil {
+			logger.Error("[%s] Failed to start pipeline: %v", pe.label, err)
+			go pe.gp.Free() // run in background: Free acquires silenceMu
+			return
 		}
 		pe.slot.activate(pe.label, pe.gp, wg)
 		if !pe.isStreaming {
-			continue
+			return
 		}
-		// Intra-refresh: best-effort property set on the AV1 encoder after startup.
+		// Intra-refresh: set on AV1 encoder after startup.
 		if period := intraRefreshPeriod(); period > 0 {
 			pe.gp.TrySetIntraRefresh("avenc", period)
 			logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
@@ -334,5 +320,5 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		// Local ABR: reads srtsink statistics directly — no network round-trip.
 		minBR := pe.maxBitrate / 5
 		pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
-	}
+	})
 }
