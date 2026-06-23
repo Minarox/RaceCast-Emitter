@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	modemmanager "github.com/maltegrosse/go-modemmanager"
+	dbus "github.com/godbus/dbus/v5"
 
 	"racecast-emitter/internal/logger"
 )
@@ -20,9 +20,8 @@ import (
 const defaultNMEAPort = "/dev/ttyUSB1"
 
 var (
-	mu   sync.Mutex
-	modm modemmanager.Modem
-	loc  modemmanager.ModemLocation
+	mu        sync.Mutex
+	modemPath dbus.ObjectPath // D-Bus object path of the detected modem
 
 	// NMEA cache updated by the background serial reader goroutine.
 	// Contains all frames from the last complete GPS epoch.
@@ -34,7 +33,12 @@ var (
 	nmeaFile *os.File
 	// nmeaStop is closed by Close() to terminate nmeaReaderLoop permanently.
 	nmeaStop chan struct{}
+
+	dbusConn *dbus.Conn // D-Bus system bus connection
 )
+
+// mmLocationSourceGpsUnmanaged = MM_MODEM_LOCATION_SOURCE_GPS_UNMANAGED (bit 4).
+const mmLocationSourceGpsUnmanaged = uint32(1 << 4)
 
 // Open initializes the modem and starts the NMEA serial reader.
 // Enables gps-unmanaged mode (AT+QGPS=1); the GNSS sends frames autonomously.
@@ -43,36 +47,39 @@ func Open() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if modm != nil {
+	if modemPath != "" {
 		return nil
 	}
 
-	mm, err := modemmanager.NewModemManager()
+	conn, err := dbus.SystemBus()
 	if err != nil {
+		return fmt.Errorf("D-Bus system bus: %w", err)
+	}
+	dbusConn = conn
+
+	// Locate the first modem via ObjectManager.
+	var managed map[dbus.ObjectPath]map[string]map[string]dbus.Variant
+	mmObj := conn.Object("org.freedesktop.ModemManager1", "/org/freedesktop/ModemManager1")
+	if err := mmObj.Call("org.freedesktop.DBus.ObjectManager.GetManagedObjects", 0).Store(&managed); err != nil {
 		return fmt.Errorf("ModemManager not found: %w", err)
 	}
-
-	modems, err := mm.GetModems()
-	if err != nil {
-		return fmt.Errorf("GetModems: %w", err)
+	var path dbus.ObjectPath
+	for p, ifaces := range managed {
+		if _, ok := ifaces["org.freedesktop.ModemManager1.Modem"]; ok {
+			path = p
+			break
+		}
 	}
-	if len(modems) == 0 {
+	if path == "" {
 		return fmt.Errorf("no modem detected")
 	}
+	modemPath = path
 
-	modm = modems[0]
-
-	l, err := modm.GetLocation()
-	if err != nil {
-		return fmt.Errorf("Location interface unavailable: %w", err)
-	}
-	loc = l
-
-	// gps-unmanaged: ModemManager sends AT+QGPS=1 but doesn't capture frames;
+	// Enable gps-unmanaged: ModemManager sends AT+QGPS=1 but does not capture frames;
 	// we read them from the serial port. signalLocation=false.
-	if err := loc.Setup([]modemmanager.MMModemLocationSource{
-		modemmanager.MmModemLocationSourceGpsUnmanaged,
-	}, false); err != nil {
+	modemObj := conn.Object("org.freedesktop.ModemManager1", modemPath)
+	if err := modemObj.Call("org.freedesktop.ModemManager1.Modem.Location.Setup", 0,
+		mmLocationSourceGpsUnmanaged, false).Err; err != nil {
 		return fmt.Errorf("Location.Setup (gps-unmanaged): %w", err)
 	}
 
@@ -97,8 +104,11 @@ func Close() {
 	mu.Lock()
 	stopCh := nmeaStop
 	f := nmeaFile
+	dbConn := dbusConn
 	nmeaStop = nil
 	nmeaFile = nil
+	dbusConn = nil
+	modemPath = ""
 	mu.Unlock()
 
 	if stopCh != nil {
@@ -106,6 +116,9 @@ func Close() {
 	}
 	if f != nil {
 		f.Close() // unblocks the scanner inside readNMEALines
+	}
+	if dbConn != nil {
+		dbConn.Close()
 	}
 }
 
@@ -242,36 +255,55 @@ func validNMEA(s string) bool {
 	return chk == byte(want)
 }
 
+// accessTechNames maps bit position 0–15 of the AccessTechnologies bitmask to names.
+// Source: ModemManager D-Bus API (MM_MODEM_ACCESS_TECHNOLOGY_*).
+// Bit 15 (5GNR) was added after go-modemmanager v0.1.4; we define it here.
+var accessTechNames = [16]string{
+	"pots", "gsm", "gsm-compact", "gprs", "edge",
+	"umts", "hsdpa", "hsupa", "hspa", "hspa+",
+	"1xrtt", "evdo0", "evdoa", "evdob", "lte", "5gnr",
+}
+
 // SignalStats holds modem network information.
 type SignalStats struct {
 	Quality uint32 // signal quality 0–100 %
-	Tech    string // active technology (e.g. "lte", "lte+nr5g")
+	Tech    string // active technology (e.g. "lte", "lte+5gnr")
 }
 
 // GetSignalStats returns the signal quality and active network technology.
 func GetSignalStats() (SignalStats, error) {
 	mu.Lock()
-	m := modm
+	conn := dbusConn
+	path := modemPath
 	mu.Unlock()
 
-	if m == nil {
+	if conn == nil || path == "" {
 		return SignalStats{}, fmt.Errorf("modem not initialized")
 	}
 
-	quality, _, err := m.GetSignalQuality()
-	if err != nil {
+	obj := conn.Object("org.freedesktop.ModemManager1", path)
+
+	// SignalQuality: D-Bus type (uu) – percent, recent_flag.
+	// godbus decodes the struct as []interface{}.
+	var sqVariant dbus.Variant
+	if err := obj.Call("org.freedesktop.DBus.Properties.Get", 0,
+		"org.freedesktop.ModemManager1.Modem", "SignalQuality").Store(&sqVariant); err != nil {
 		return SignalStats{}, err
 	}
-
-	techs, err := m.GetAccessTechnologies()
-	if err != nil {
-		return SignalStats{}, err
+	var quality uint32
+	if sv, ok := sqVariant.Value().([]interface{}); ok && len(sv) > 0 {
+		quality, _ = sv[0].(uint32)
 	}
 
-	parts := make([]string, 0, len(techs))
-	for _, t := range techs {
-		if s := t.String(); s != "" && s != "unknown" {
-			parts = append(parts, s)
+	// AccessTechnologies: D-Bus type u – bitmask of active radio technologies.
+	var rawTech uint32
+	_ = obj.Call("org.freedesktop.DBus.Properties.Get", 0,
+		"org.freedesktop.ModemManager1.Modem", "AccessTechnologies").Store(&rawTech)
+
+	var parts []string
+	for i, name := range accessTechNames {
+		if rawTech&(1<<i) != 0 {
+			parts = append(parts, name)
 		}
 	}
 
