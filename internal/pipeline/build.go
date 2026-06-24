@@ -140,13 +140,13 @@ func BuildVideoStreamStr(cam config.Camera, srtPort int) string {
 	var enc string
 	if intraRefreshPeriod() > 0 {
 		enc = fmt.Sprintf(
-			"nvv4l2av1enc name=avenc bitrate=%d insert-seq-hdr=true",
+			"nvv4l2av1enc name=avenc control-rate=1 disable-cdf=false bitrate=%d insert-seq-hdr=true",
 			cam.StreamBitrate(),
 		)
 	} else {
 		enc = fmt.Sprintf(
-			"nvv4l2av1enc name=avenc bitrate=%d idrinterval=%d insert-seq-hdr=true",
-			cam.StreamBitrate(), cam.StreamFramerate()/2,
+			"nvv4l2av1enc name=avenc control-rate=1 disable-cdf=false bitrate=%d idrinterval=%d insert-seq-hdr=true",
+			cam.StreamBitrate(), cam.StreamFramerate()*2,
 		)
 	}
 

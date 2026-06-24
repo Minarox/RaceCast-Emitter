@@ -14,9 +14,9 @@ import (
 
 // ABR thresholds and parameters.
 const (
-	fbLocalInterval  = 3 * time.Second
-	fbDecreaseLoss   = 5.0   // % packet loss → reduce bitrate
-	fbDecreaseRTT    = 400.0 // ms RTT → reduce bitrate
+	fbLocalInterval  = 2 * time.Second
+	fbDecreaseLoss   = 3.0   // % packet loss → reduce bitrate
+	fbDecreaseRTT    = 150.0 // ms RTT → reduce bitrate
 	fbIncreaseLoss   = 0.5   // % packet loss (below) → allow recovery
 	fbIncreaseRTT    = 200.0 // ms RTT (below) → allow recovery
 	fbDecreaseFactor = 0.70  // reduce to 70% on degraded link

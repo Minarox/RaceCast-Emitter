@@ -156,19 +156,17 @@ func (s *Slot) PauseStream() {
 }
 
 // ResumeStream transitions the streaming pipeline back to GST_STATE_PLAYING.
-// An IDR is forced only when intra-refresh is disabled: with intra-refresh
-// active, forcing an IDR on a recovering link would cause a bitrate spike
-// that defeats the purpose of intra-refresh. The rolling refresh repopulates
-// the picture gradually without the spike.
+// An IDR is always forced on link recovery: the receiver recreates its
+// GStreamer pipeline on reconnect and needs a clean keyframe to start decoding,
+// regardless of whether intra-refresh is active. The one-time bitrate spike is
+// acceptable since the link has just recovered.
 func (s *Slot) ResumeStream() {
 	s.mu.Lock()
 	gp := s.stream
 	s.mu.Unlock()
 	if gp != nil {
 		gp.Play()
-		if intraRefreshPeriod() == 0 {
-			gp.ForceIDR("avenc") // no-op on audio pipelines (element not found)
-		}
+		gp.ForceIDR("avenc") // no-op on audio pipelines (element not found)
 	}
 }
 
@@ -190,9 +188,14 @@ type PollOptions struct {
 }
 
 // Poll scans all configured sources and starts any pipeline that is not yet
-// running. For each source it may start up to three pipelines (source, record,
-// stream) in a single StartEach call so that inter-element channels are
-// established atomically.
+// running. It proceeds in two sequential phases so that record and stream
+// pipelines are only launched once the capture pipeline for their device is
+// confirmed running:
+//
+//  1. Start capture (source) pipelines for any device not yet capturing.
+//  2. Start record/stream (consumer) pipelines only for slots whose source is
+//     now running — either because it was already active or because phase 1
+//     just started it successfully.
 func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots, micSlots map[string]*Slot, wg *sync.WaitGroup) {
 	if ctx.Err() != nil {
 		return
@@ -209,53 +212,174 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		maxBitrate int
 	}
 
-	var entries []entry
+	// startEntries creates GStreamer pipelines for all entries in the slice and
+	// starts them in parallel under a single silence window.
+	startEntries := func(entries []entry) {
+		if len(entries) == 0 {
+			return
+		}
+		type prepEntry struct {
+			entry
+			gp *GstPipeline
+		}
+		var preps []prepEntry
+		for _, e := range entries {
+			e := e
+			s := e.slot
+			s.mu.Lock()
+			ok := ctx.Err() == nil && *e.field == nil
+			s.mu.Unlock()
+			if !ok {
+				continue
+			}
+			gp, err := newGstPipeline(ctx, e.str)
+			if err != nil {
+				logger.Error("[%s] Failed to create pipeline: %v", e.label, err)
+				continue
+			}
+			field := e.field
+			gp.SetOnError(func() {
+				s.mu.Lock()
+				if *field == gp {
+					*field = nil
+				}
+				s.mu.Unlock()
+				go func() { gp.SetNull(); gp.Free() }()
+				logger.Warn("[%s] Pipeline error — device disconnected?", e.label)
+			})
+			preps = append(preps, prepEntry{e, gp})
+		}
+		if len(preps) == 0 {
+			return
+		}
+		gpList := make([]*GstPipeline, len(preps))
+		for i, pe := range preps {
+			gpList[i] = pe.gp
+		}
+		StartEach(gpList, func(i int, err error) {
+			pe := preps[i]
+			if err != nil {
+				logger.Error("[%s] Failed to start pipeline: %v", pe.label, err)
+				go pe.gp.Free()
+				return
+			}
+			pe.slot.activatePipeline(pe.label, pe.gp, pe.field, wg)
+			if !pe.isStream {
+				return
+			}
+			// Stream pipeline post-start: intra-refresh + local ABR.
+			if period := intraRefreshPeriod(); period > 0 {
+				pe.gp.TrySetIntraRefresh("avenc", period)
+				logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
+			}
+			minBR := pe.maxBitrate / 5
+			pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
+		})
+	}
 
-	// ── Cameras ──────────────────────────────────────────────────────────────
+	// ── Phase 1: start capture pipelines for newly discovered devices ─────────
+	var srcEntries []entry
+
 	for i := range cfg.Cameras {
 		cam := cfg.Cameras[i]
 		if cam.Disabled {
 			continue
 		}
 		s := cameraSlots[cam.UID]
-		if s == nil {
+		if s == nil || s.IsSourceRunning() {
 			continue
 		}
 		doStream := opts.Stream && cam.HasStream()
 		if !opts.Record && !doStream {
 			continue
 		}
-
 		label := "camera:" + sanitize(cam.Name)
-
-		// Source pipeline requires the physical device.
-		if !s.IsSourceRunning() {
-			dev, err := devices.FindVideo(cam.UID)
-			if err != nil {
-				if !s.notFound {
-					logger.Warn("[%s] Not found (UID: %s), waiting...", label, cam.UID)
-					s.notFound = true
-				}
-				continue
+		dev, err := devices.FindVideo(cam.UID)
+		if err != nil {
+			if !s.notFound {
+				logger.Warn("[%s] Not found (UID: %s), waiting...", label, cam.UID)
+				s.notFound = true
 			}
-			s.notFound = false
-
-			switch {
-			case opts.Record && doStream:
-				logger.Info("[%s] %s → H.264 record + AV1/SRT stream (port %d)", label, dev, srtPort)
-			case opts.Record:
-				logger.Info("[%s] %s → H.264 record", label, dev)
-			default:
-				logger.Info("[%s] %s → AV1/SRT stream (port %d)", label, dev, srtPort)
-			}
-
-			entries = append(entries, entry{
-				label: label + ":source",
-				str:   BuildVideoSourceStr(cam, dev),
-				slot:  s,
-				field: &s.source,
-			})
+			continue
 		}
+		s.notFound = false
+		switch {
+		case opts.Record && doStream:
+			logger.Info("[%s] %s → H.264 record + AV1/SRT stream (port %d)", label, dev, srtPort)
+		case opts.Record:
+			logger.Info("[%s] %s → H.264 record", label, dev)
+		default:
+			logger.Info("[%s] %s → AV1/SRT stream (port %d)", label, dev, srtPort)
+		}
+		srcEntries = append(srcEntries, entry{
+			label: label + ":source",
+			str:   BuildVideoSourceStr(cam, dev),
+			slot:  s,
+			field: &s.source,
+		})
+	}
+
+	for i := range cfg.Microphones {
+		mic := cfg.Microphones[i]
+		if mic.Disabled {
+			continue
+		}
+		s := micSlots[mic.UID]
+		if s == nil || s.IsSourceRunning() {
+			continue
+		}
+		doStream := opts.Stream && mic.HasStream()
+		if !opts.Record && !doStream {
+			continue
+		}
+		label := "mic:" + sanitize(mic.Name)
+		alsaDev, err := devices.FindALSA(mic.UID)
+		if err != nil {
+			if !s.notFound {
+				logger.Warn("[%s] Not found (UID: %s), waiting...", label, mic.UID)
+				s.notFound = true
+			}
+			continue
+		}
+		s.notFound = false
+		switch {
+		case opts.Record && doStream:
+			logger.Info("[%s] %s → AAC record + Opus/SRT stream (port %d)", label, alsaDev, srtPort)
+		case opts.Record:
+			logger.Info("[%s] %s → AAC record", label, alsaDev)
+		default:
+			logger.Info("[%s] %s → Opus/SRT stream (port %d)", label, alsaDev, srtPort)
+		}
+		srcEntries = append(srcEntries, entry{
+			label: label + ":source",
+			str:   BuildAudioSourceStr(mic, alsaDev),
+			slot:  s,
+			field: &s.source,
+		})
+	}
+
+	startEntries(srcEntries)
+
+	// ── Phase 2: start record/stream pipelines for slots with a running source ─
+	// After startEntries returns, activatePipeline has been called for every
+	// source that started successfully, so IsSourceRunning() reflects the
+	// current state and gates the consumer pipelines correctly.
+	var consEntries []entry
+
+	for i := range cfg.Cameras {
+		cam := cfg.Cameras[i]
+		if cam.Disabled {
+			continue
+		}
+		s := cameraSlots[cam.UID]
+		if s == nil || !s.IsSourceRunning() {
+			continue
+		}
+		doStream := opts.Stream && cam.HasStream()
+		if !opts.Record && !doStream {
+			continue
+		}
+		label := "camera:" + sanitize(cam.Name)
 
 		if opts.Record && !s.IsRecordRunning() {
 			now := time.Now()
@@ -266,7 +390,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			}
 			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_video.mp4",
 				now.Format("15-04-05"), sanitize(cam.Name)))
-			entries = append(entries, entry{
+			consEntries = append(consEntries, entry{
 				label: label + ":record",
 				str:   BuildVideoRecordStr(cam, outputPath),
 				slot:  s,
@@ -275,7 +399,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 
 		if doStream && !s.IsStreamRunning() {
-			entries = append(entries, entry{
+			consEntries = append(consEntries, entry{
 				label:      label + ":stream",
 				str:        BuildVideoStreamStr(cam, srtPort),
 				slot:       s,
@@ -286,50 +410,20 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 	}
 
-	// ── Microphones ──────────────────────────────────────────────────────────
 	for i := range cfg.Microphones {
 		mic := cfg.Microphones[i]
 		if mic.Disabled {
 			continue
 		}
 		s := micSlots[mic.UID]
-		if s == nil {
+		if s == nil || !s.IsSourceRunning() {
 			continue
 		}
 		doStream := opts.Stream && mic.HasStream()
 		if !opts.Record && !doStream {
 			continue
 		}
-
 		label := "mic:" + sanitize(mic.Name)
-
-		if !s.IsSourceRunning() {
-			alsaDev, err := devices.FindALSA(mic.UID)
-			if err != nil {
-				if !s.notFound {
-					logger.Warn("[%s] Not found (UID: %s), waiting...", label, mic.UID)
-					s.notFound = true
-				}
-				continue
-			}
-			s.notFound = false
-
-			switch {
-			case opts.Record && doStream:
-				logger.Info("[%s] %s → AAC record + Opus/SRT stream (port %d)", label, alsaDev, srtPort)
-			case opts.Record:
-				logger.Info("[%s] %s → AAC record", label, alsaDev)
-			default:
-				logger.Info("[%s] %s → Opus/SRT stream (port %d)", label, alsaDev, srtPort)
-			}
-
-			entries = append(entries, entry{
-				label: label + ":source",
-				str:   BuildAudioSourceStr(mic, alsaDev),
-				slot:  s,
-				field: &s.source,
-			})
-		}
 
 		if opts.Record && !s.IsRecordRunning() {
 			now := time.Now()
@@ -340,7 +434,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			}
 			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_audio.mp4",
 				now.Format("15-04-05"), sanitize(mic.Name)))
-			entries = append(entries, entry{
+			consEntries = append(consEntries, entry{
 				label: label + ":record",
 				str:   BuildAudioRecordStr(mic, outputPath),
 				slot:  s,
@@ -349,7 +443,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 
 		if doStream && !s.IsStreamRunning() {
-			entries = append(entries, entry{
+			consEntries = append(consEntries, entry{
 				label:    label + ":stream",
 				str:      BuildAudioStreamStr(mic, srtPort),
 				slot:     s,
@@ -359,69 +453,5 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 	}
 
-	if len(entries) == 0 {
-		return
-	}
-
-	// Phase 1: create all GStreamer pipelines (gst_parse_launch).
-	type prepEntry struct {
-		entry
-		gp *GstPipeline
-	}
-	var preps []prepEntry
-	for _, e := range entries {
-		e := e
-		s := e.slot
-		s.mu.Lock()
-		ok := ctx.Err() == nil && *e.field == nil
-		s.mu.Unlock()
-		if !ok {
-			continue
-		}
-		gp, err := newGstPipeline(ctx, e.str)
-		if err != nil {
-			logger.Error("[%s] Failed to create pipeline: %v", e.label, err)
-			continue
-		}
-		field := e.field
-		gp.SetOnError(func() {
-			s.mu.Lock()
-			if *field == gp {
-				*field = nil
-			}
-			s.mu.Unlock()
-			go func() { gp.SetNull(); gp.Free() }()
-			logger.Warn("[%s] Pipeline error — device disconnected?", e.label)
-		})
-		preps = append(preps, prepEntry{e, gp})
-	}
-
-	if len(preps) == 0 {
-		return
-	}
-
-	// Phase 2: start all pipelines in parallel (single silence window).
-	gpList := make([]*GstPipeline, len(preps))
-	for i, pe := range preps {
-		gpList[i] = pe.gp
-	}
-	StartEach(gpList, func(i int, err error) {
-		pe := preps[i]
-		if err != nil {
-			logger.Error("[%s] Failed to start pipeline: %v", pe.label, err)
-			go pe.gp.Free()
-			return
-		}
-		pe.slot.activatePipeline(pe.label, pe.gp, pe.field, wg)
-		if !pe.isStream {
-			return
-		}
-		// Stream pipeline post-start: intra-refresh + local ABR.
-		if period := intraRefreshPeriod(); period > 0 {
-			pe.gp.TrySetIntraRefresh("avenc", period)
-			logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
-		}
-		minBR := pe.maxBitrate / 5
-		pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
-	})
+	startEntries(consEntries)
 }
