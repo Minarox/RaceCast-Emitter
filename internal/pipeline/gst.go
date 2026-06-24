@@ -265,38 +265,6 @@ func (p *GstPipeline) startInner() error {
 	return nil
 }
 
-// StartAll starts multiple pipelines in parallel under a single silence window.
-// Prevents the fd-1 race where concurrent goroutines dup(1) after it has been
-// redirected to /dev/null, permanently losing stdout.
-// Returns errors indexed on the input slice (nil = success).
-func StartAll(pipelines []*GstPipeline) []error {
-	silenceMu.Lock()
-	defer silenceMu.Unlock()
-	var out, errfd C.int
-	C.silence_begin(&out, &errfd)
-	defer C.silence_end(out, errfd)
-
-	errs := make([]error, len(pipelines))
-	var sg sync.WaitGroup
-	for i, gp := range pipelines {
-		i, gp := i, gp
-		sg.Add(1)
-		go func() {
-			defer sg.Done()
-			gp.mu.Lock()
-			defer gp.mu.Unlock()
-			if gp.running {
-				return
-			}
-			errs[i] = gp.startInner()
-		}()
-	}
-	sg.Wait()
-	// Brief delay for Nvidia threads that may still write after get_state PLAYING.
-	time.Sleep(100 * time.Millisecond)
-	return errs
-}
-
 // StartEach starts all pipelines in parallel within one silence window, calling
 // onReady(i, err) per pipeline as soon as it reaches GST_STATE_PLAYING (or fails).
 // Faster pipelines (e.g. audio) are activated immediately while slower ones

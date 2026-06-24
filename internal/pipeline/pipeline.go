@@ -185,6 +185,9 @@ func (s *Slot) ForceIDR(encoderName string) {
 type PollOptions struct {
 	Record bool
 	Stream bool
+	// NotifyClose is called when a source pipeline errors (device disconnect).
+	// The argument is the camera or microphone name. Optional.
+	NotifyClose func(name string)
 }
 
 // Poll scans all configured sources and starts any pipeline that is not yet
@@ -210,6 +213,9 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		field      **GstPipeline
 		isStream   bool
 		maxBitrate int
+		// streamName is set on source entries so the onError callback can notify
+		// the receiver that the stream was closed intentionally.
+		streamName string
 	}
 
 	// startEntries creates GStreamer pipelines for all entries in the slice and
@@ -238,7 +244,13 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 				continue
 			}
 			field := e.field
+			streamName := e.streamName
 			gp.SetOnError(func() {
+				// Notify the receiver immediately so it skips the grace period
+				// and unpublishes the LiveKit track without delay.
+				if opts.NotifyClose != nil && streamName != "" {
+					opts.NotifyClose(streamName)
+				}
 				s.mu.Lock()
 				if *field == gp {
 					*field = nil
@@ -312,10 +324,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			logger.Info("[%s] %s → AV1/SRT stream (port %d)", label, dev, srtPort)
 		}
 		srcEntries = append(srcEntries, entry{
-			label: label + ":source",
-			str:   BuildVideoSourceStr(cam, dev),
-			slot:  s,
-			field: &s.source,
+			label:      label + ":source",
+			str:        BuildVideoSourceStr(cam, dev),
+			slot:       s,
+			field:      &s.source,
+			streamName: cam.Name,
 		})
 	}
 
@@ -351,10 +364,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			logger.Info("[%s] %s → Opus/SRT stream (port %d)", label, alsaDev, srtPort)
 		}
 		srcEntries = append(srcEntries, entry{
-			label: label + ":source",
-			str:   BuildAudioSourceStr(mic, alsaDev),
-			slot:  s,
-			field: &s.source,
+			label:      label + ":source",
+			str:        BuildAudioSourceStr(mic, alsaDev),
+			slot:       s,
+			field:      &s.source,
+			streamName: mic.Name,
 		})
 	}
 

@@ -10,8 +10,8 @@ cameras:
     vertical_flip: true
     horizontal_flip: true
     stream:
-      width: 1280
-      height: 720
+      width: 960
+      height: 540
       framerate: 30
       bitrate: 1000000
 
@@ -23,10 +23,10 @@ cameras:
     vertical_flip: true
     horizontal_flip: true
     stream:
-      width: 1280
-      height: 720
-      framerate: 30
-      bitrate: 1000000
+      width: 854
+      height: 480
+      framerate: 25
+      bitrate: 400000
 
 
 # List devices : arecord -l

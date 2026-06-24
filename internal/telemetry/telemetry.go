@@ -151,6 +151,16 @@ func (c *Conn) Send(data []byte) error {
 	return nil
 }
 
+// SendStreamClose notifies the receiver that the named stream is being closed
+// intentionally (camera disconnect or program shutdown). The receiver uses this
+// to skip the reconnect grace period and unpublish the LiveKit track immediately.
+// Best-effort: errors are silently ignored (the receiver falls back to the full
+// grace timeout if the signal is not delivered).
+func (c *Conn) SendStreamClose(name string) error {
+	data := fmt.Appendf(nil, `{"type":"stream_close","stream":%q}`, name)
+	return c.Send(data)
+}
+
 // Close closes the SRT socket. Must be called at program shutdown.
 func (c *Conn) Close() {
 	c.mu.Lock()

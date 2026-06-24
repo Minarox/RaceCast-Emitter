@@ -199,6 +199,14 @@ func Run(ctx context.Context, interval time.Duration) {
 
 	first := true
 	for {
+		// Check cancellation before the I2C read so the loop exits immediately
+		// even if the ticker fires at the same instant as ctx.Done().
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		if !first {
 			// Move up one line and erase it to overwrite the previous value.
 			fmt.Fprint(os.Stdout, "\033[1A\033[2K")

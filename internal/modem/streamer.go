@@ -16,8 +16,11 @@ import (
 const (
 	modemInterval = 1 * time.Second
 
-	// Delay before the first poll, to allow the initial AGPS fix.
-	modemWarmup = 3 * time.Second
+	// modemWarmup is the maximum time to wait before the first poll.
+	// The wait is skipped early if the NMEA reader already has fresh data
+	// (e.g. warm restart after a crash — GPS was already running).
+	modemWarmup   = 3 * time.Second
+	nmeaFreshAge  = 5 * time.Second // GPS considered live if last epoch < 5 s ago
 )
 
 // modemJSON is the JSON payload sent to the server at each interval.
@@ -36,7 +39,7 @@ type modemJSON struct {
 	NMEA   *string  `json:"nmea,omitempty"` // raw NMEA sentences joined by \r\n
 	// Network — always present
 	Signal uint32 `json:"signal"` // signal quality 0–100 %
-	Tech   string `json:"tech"`   // active technology (e.g. "lte", "lte+nr5g")
+	Tech   string `json:"tech"`   // active technology (e.g. "lte", "5gnr")
 }
 
 // RunStream sends modem data every second via conn. Stops when ctx is cancelled.
@@ -47,11 +50,24 @@ func RunStream(ctx context.Context, conn *telemetry.Conn) {
 	}
 	defer Close()
 
-	// Wait for the initial AGPS fix before first poll.
-	select {
-	case <-time.After(modemWarmup):
-	case <-ctx.Done():
-		return
+	// Wait for the initial AGPS fix before the first poll, unless the NMEA
+	// reader already has fresh data (warm restart — GPS was already active).
+	warmup := time.NewTimer(modemWarmup)
+	defer warmup.Stop()
+	poll := time.NewTicker(200 * time.Millisecond)
+	defer poll.Stop()
+warmupLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-warmup.C:
+			break warmupLoop
+		case <-poll.C:
+			if NMEAAge() < nmeaFreshAge {
+				break warmupLoop
+			}
+		}
 	}
 
 	ticker := time.NewTicker(modemInterval)

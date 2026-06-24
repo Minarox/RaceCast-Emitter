@@ -3,6 +3,7 @@ package modem
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -217,7 +218,9 @@ func readNMEALines(f *os.File) {
 		nmeaLastUpdate = time.Now()
 		nmeaMu.Unlock()
 	}
-	if err := scanner.Err(); err != nil {
+	// os.ErrClosed is expected during normal shutdown: Close() closes the serial
+	// port to unblock the scanner. Suppress this to avoid confusing log noise.
+	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
 		logger.Warn("[modem] NMEA reader error: %v", err)
 	}
 }
@@ -275,11 +278,22 @@ var accessTechNames = [16]string{
 // SignalStats holds modem network information.
 type SignalStats struct {
 	Quality uint32 // signal quality 0–100 %
-	Tech    string // active technology (e.g. "lte", "lte+5gnr")
+	Tech    string // active (highest priority) technology (e.g. "lte", "5gnr")
 }
 
 // GetSignalStats returns the signal quality and active network technology.
+// Uses context.Background(); prefer GetSignalStatsCtx when a cancellable
+// context is available so D-Bus calls are cancelled on shutdown.
 func GetSignalStats() (SignalStats, error) {
+	return GetSignalStatsCtx(context.Background())
+}
+
+// GetSignalStatsCtx is the context-aware variant of GetSignalStats.
+// Each D-Bus call has an independent 5 s timeout: some ModemManager builds
+// query the modem hardware synchronously, which can block for 10–30 s without
+// a deadline. The parent ctx cancellation is still propagated — the effective
+// deadline is min(ctx deadline, now+5s).
+func GetSignalStatsCtx(ctx context.Context) (SignalStats, error) {
 	mu.Lock()
 	conn := dbusConn
 	path := modemPath
@@ -289,12 +303,16 @@ func GetSignalStats() (SignalStats, error) {
 		return SignalStats{}, fmt.Errorf("modem not initialized")
 	}
 
+	// Per-call timeout: caps each D-Bus round-trip independently of the parent ctx.
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	obj := conn.Object("org.freedesktop.ModemManager1", path)
 
 	// SignalQuality: D-Bus type (uu) – percent, recent_flag.
 	// godbus decodes the struct as []interface{}.
 	var sqVariant dbus.Variant
-	if err := obj.Call("org.freedesktop.DBus.Properties.Get", 0,
+	if err := obj.CallWithContext(callCtx, "org.freedesktop.DBus.Properties.Get", 0,
 		"org.freedesktop.ModemManager1.Modem", "SignalQuality").Store(&sqVariant); err != nil {
 		return SignalStats{}, err
 	}
@@ -304,20 +322,29 @@ func GetSignalStats() (SignalStats, error) {
 	}
 
 	// AccessTechnologies: D-Bus type u – bitmask of active radio technologies.
+	// Returns the highest-priority (last set bit) technology name.
+	// If the parent ctx is cancelled we propagate it; any other error (including
+	// callCtx timeout) is tolerated — Tech stays empty, no bitrate penalty.
 	var rawTech uint32
-	_ = obj.Call("org.freedesktop.DBus.Properties.Get", 0,
-		"org.freedesktop.ModemManager1.Modem", "AccessTechnologies").Store(&rawTech)
+	if err := obj.CallWithContext(callCtx, "org.freedesktop.DBus.Properties.Get", 0,
+		"org.freedesktop.ModemManager1.Modem", "AccessTechnologies").Store(&rawTech); err != nil {
+		if ctx.Err() != nil {
+			return SignalStats{}, ctx.Err()
+		}
+		// Non-fatal: continue with rawTech == 0 (no tech penalty applied).
+	}
 
-	var parts []string
+	// Keep only the highest-priority technology (last set bit in the bitmask).
+	var lastTech string
 	for i, name := range accessTechNames {
-		if rawTech&(1<<i) != 0 {
-			parts = append(parts, name)
+		if rawTech&(1<<uint(i)) != 0 {
+			lastTech = name
 		}
 	}
 
 	return SignalStats{
 		Quality: quality,
-		Tech:    strings.Join(parts, "+"),
+		Tech:    lastTech,
 	}, nil
 }
 
@@ -392,7 +419,7 @@ func WatchConnectivity(ctx context.Context, onChange func(connected bool)) {
 		case <-ticker.C:
 		}
 
-		stats, err := GetSignalStats()
+		stats, err := GetSignalStatsCtx(ctx)
 		if err != nil {
 			noModemCount++
 			if noModemCount >= 5 {
@@ -440,7 +467,26 @@ func Run(ctx context.Context) {
 
 		sentences, _ := GetNMEA()
 		pos, hasPos := ParseNMEA(sentences)
-		stats, _ := GetSignalStats()
+
+		// GetSignalStats makes synchronous D-Bus calls that may block for several
+		// seconds when the modem is busy. Running it in a goroutine lets ctx.Done()
+		// interrupt the wait immediately on Ctrl+C.
+		type statsRes struct {
+			s   SignalStats
+			err error
+		}
+		statsCh := make(chan statsRes, 1)
+		go func() {
+			s, err := GetSignalStatsCtx(ctx)
+			statsCh <- statsRes{s, err}
+		}()
+		var stats SignalStats
+		select {
+		case <-ctx.Done():
+			return
+		case res := <-statsCh:
+			stats = res.s
+		}
 
 		if hasPos && pos.Fix {
 			logger.Info(
@@ -452,8 +498,8 @@ func Run(ctx context.Context) {
 			)
 		} else {
 			logger.Info(
-				"[modem] no fix  sats=%2d  signal=%3d%% %s",
-				pos.Sats, stats.Quality, stats.Tech,
+				"[modem] no fix  signal=%3d%% %s",
+				stats.Quality, stats.Tech,
 			)
 		}
 		first = false

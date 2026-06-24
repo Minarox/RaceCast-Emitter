@@ -44,9 +44,19 @@ func main() {
 
 	if *modemFlag {
 		logger.InitConsole()
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		sigCh := make(chan os.Signal, 2)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			cancel()
+			<-sigCh
+			logger.Warn("Second signal — forcing exit")
+			os.Exit(0)
+		}()
 		modem.Run(ctx)
+		signal.Stop(sigCh)
 		return
 	}
 
@@ -61,9 +71,19 @@ func main() {
 				logger.Fatal("[ups] Invalid interval: %q (expected a number >= 0.05)", args[0])
 			}
 		}
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		sigCh := make(chan os.Signal, 2)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			cancel()
+			<-sigCh
+			logger.Warn("Second signal — forcing exit")
+			os.Exit(0)
+		}()
 		ups.Run(ctx, interval)
+		signal.Stop(sigCh)
 		return
 	}
 
@@ -184,6 +204,9 @@ func main() {
 	}
 
 	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream}
+	if doStream {
+		pollOpts.NotifyClose = func(name string) { _ = telemConn.SendStreamClose(name) }
+	}
 
 	// The control goroutine is NOT tracked in wg (only pipeline goroutines are).
 	// This prevents wg.Wait() from blocking on StartAll's CGo get_state call.
@@ -233,6 +256,21 @@ func main() {
 		os.Exit(1)
 	}()
 
+	// Notify the receiver before tearing down pipelines so it can immediately
+	// unpublish LiveKit tracks without waiting for the reconnect grace period.
+	if doStream {
+		for _, cam := range cfg.Cameras {
+			if s, ok := cameraSlots[cam.UID]; ok && s.IsStreamRunning() {
+				_ = telemConn.SendStreamClose(cam.Name)
+			}
+		}
+		for _, mic := range cfg.Microphones {
+			if s, ok := micSlots[mic.UID]; ok && s.IsStreamRunning() {
+				_ = telemConn.SendStreamClose(mic.Name)
+			}
+		}
+	}
+
 	// Stop all running pipelines: source and stream are cancelled immediately;
 	// record receives EOS so that mp4mux flushes and filesink closes cleanly.
 	for _, s := range cameraSlots {
@@ -242,15 +280,7 @@ func main() {
 		s.Stop()
 	}
 
-	// Hard safety: if wg.Wait() still blocks (e.g. a CGo call is stuck or
-	// EOS propagation takes longer than expected), force exit. The kernel
-	// reclaims all resources.
-	exitTimer := time.AfterFunc(10*time.Second, func() {
-		logger.Warn("Shutdown timeout exceeded — forcing exit")
-		os.Exit(0)
-	})
-
+	logger.Info("Waiting for pipelines to stop... (Ctrl+C again to force)")
 	wg.Wait()
-	exitTimer.Stop()
 	logger.Info("All pipelines stopped.")
 }

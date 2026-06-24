@@ -84,7 +84,7 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 		// Modem ceiling: pre-emptive upper bound based on radio tech/quality,
 		// before SRT stats degrade. Equals maxBitrate when modem is unavailable.
 		effectiveMax := maxBitrate
-		modemStats, modemErr := modem.GetSignalStats()
+		modemStats, modemErr := modem.GetSignalStatsCtx(p.controlCtx)
 		if modemErr == nil {
 			effectiveMax = modem.BitrateAdvisoryFromStats(maxBitrate, modemStats)
 			if effectiveMax != prevEffectiveMax {
