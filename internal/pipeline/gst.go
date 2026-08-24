@@ -113,14 +113,16 @@ package pipeline
 // }
 //
 // // try_set_intra_refresh attempts to enable intra-refresh on a named encoder.
-// // Silently ignored if the encoder does not support the property.
-// static void try_set_intra_refresh(GstElement *pipeline, const char *name, guint period) {
+// // Returns 1 if the encoder element was found and configured, 0 otherwise
+// // (e.g. the named element does not exist in this pipeline).
+// static int try_set_intra_refresh(GstElement *pipeline, const char *name, guint period) {
 //     GstElement *enc = gst_bin_get_by_name(GST_BIN(pipeline), name);
-//     if (!enc) return;
+//     if (!enc) return 0;
 //     g_object_set(enc, "EnableIntraRefresh", (gboolean)TRUE, NULL);
 //     if (period > 0)
 //         g_object_set(enc, "intra-refresh-period", period, NULL);
 //     gst_object_unref(enc);
+//     return 1;
 // }
 //
 // // get_srtsink_stats reads cumulative SRT statistics from a named srtsink element
@@ -363,7 +365,11 @@ func (p *GstPipeline) SetNull() {
 	var out, errfd C.int
 	C.silence_begin(&out, &errfd)
 	defer C.silence_end(out, errfd)
-	C.gst_element_set_state(p.pipeline, C.GST_STATE_NULL)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pipeline != nil {
+		C.gst_element_set_state(p.pipeline, C.GST_STATE_NULL)
+	}
 }
 
 // Stop gracefully stops the pipeline: EOS -> drain -> NULL.
@@ -383,6 +389,8 @@ func (p *GstPipeline) Free() {
 	var out, errfd C.int
 	C.silence_begin(&out, &errfd)
 	defer C.silence_end(out, errfd)
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.pipeline != nil {
 		C.gst_object_unref(C.gpointer(p.pipeline))
 		p.pipeline = nil
@@ -391,7 +399,13 @@ func (p *GstPipeline) Free() {
 
 // watchBus monitors the GStreamer bus and logs errors and warnings.
 // Stops on EOS or context cancellation.
+// Cancels the drain context on every exit path (EOS, error, or external
+// cancellation) so that dependent watchers (e.g. WatchLocalStats' ABR loop,
+// which only stops on p.ctx.Done()) don't keep running against a pipeline
+// that has stopped being monitored -- e.g. after a runtime error tears the
+// pipeline down without going through Slot.Stop()/Cancel().
 func (p *GstPipeline) watchBus() {
+	defer p.cancel()
 	bus := C.get_bus(p.pipeline)
 	if bus == nil {
 		logger.Warn("[gst] Failed to get pipeline bus")
@@ -458,15 +472,18 @@ func (p *GstPipeline) ForceIDR(encoderName string) {
 }
 
 // TrySetIntraRefresh attempts to enable intra-refresh on the named encoder.
-// Best-effort: silently ignored if the encoder does not support the properties.
-func (p *GstPipeline) TrySetIntraRefresh(encoderName string, period int) {
+// Returns true if the encoder element was found and configured. Best-effort:
+// a caller that wants an accurate log should check the return value rather
+// than assuming success.
+func (p *GstPipeline) TrySetIntraRefresh(encoderName string, period int) bool {
 	cName := C.CString(encoderName)
 	defer C.free(unsafe.Pointer(cName))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.pipeline != nil {
-		C.try_set_intra_refresh(p.pipeline, cName, C.guint(period))
+	if p.pipeline == nil {
+		return false
 	}
+	return C.try_set_intra_refresh(p.pipeline, cName, C.guint(period)) != 0
 }
 
 // GetSRTSinkStats reads cumulative SRT stats from the named srtsink element.

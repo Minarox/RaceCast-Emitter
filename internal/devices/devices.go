@@ -87,7 +87,9 @@ func FindALSA(uid string) (string, error) {
 		if serial, ok := udevSerial(dev); ok && serial == uid {
 			var card, device int
 			base := filepath.Base(dev) // e.g. "pcmC1D0c"
-			fmt.Sscanf(base, "pcmC%dD%dc", &card, &device)
+			if _, err := fmt.Sscanf(base, "pcmC%dD%dc", &card, &device); err != nil {
+				continue
+			}
 			return fmt.Sprintf("hw:%d,%d", card, device), nil
 		}
 	}

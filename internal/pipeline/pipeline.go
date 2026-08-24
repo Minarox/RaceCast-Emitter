@@ -281,8 +281,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			}
 			// Stream pipeline post-start: intra-refresh + local ABR.
 			if period := intraRefreshPeriod(); period > 0 {
-				pe.gp.TrySetIntraRefresh("avenc", period)
-				logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
+				if pe.gp.TrySetIntraRefresh("avenc", period) {
+					logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
+				} else {
+					logger.Warn("[%s] Intra-refresh requested but encoder element not found", pe.label)
+				}
 			}
 			minBR := pe.maxBitrate / 5
 			pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
@@ -457,12 +460,14 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 
 		if doStream && !s.IsStreamRunning() {
+			// isStream is intentionally left false: the post-start block
+			// (intra-refresh + WatchLocalStats ABR) targets the "avenc" AV1
+			// video encoder and is meaningless for an audio (Opus) pipeline.
 			consEntries = append(consEntries, entry{
-				label:    label + ":stream",
-				str:      BuildAudioStreamStr(mic, srtPort),
-				slot:     s,
-				field:    &s.stream,
-				isStream: true,
+				label: label + ":stream",
+				str:   BuildAudioStreamStr(mic, srtPort),
+				slot:  s,
+				field: &s.stream,
 			})
 		}
 	}
