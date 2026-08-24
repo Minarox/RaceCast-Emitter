@@ -196,7 +196,11 @@ func BuildAudioRecordStr(mic config.Microphone, outputPath string) string {
 	caps := fmt.Sprintf("audio/x-raw,format=S16LE,rate=%d,channels=%d", mic.SampleRate, mic.Channels)
 
 	const (
-		blackFPS     = 25
+		// blackFPS is deliberately low: this track only exists so ffmpeg-family
+		// tools see a video stream alongside the audio, nobody watches it, so
+		// there's no reason to spend hardware encoder cycles on 25fps of a
+		// static frame.
+		blackFPS     = 5
 		blackBitrate = 100_000
 	)
 
@@ -221,11 +225,21 @@ func BuildAudioRecordStr(mic config.Microphone, outputPath string) string {
 
 // BuildAudioStreamStr builds the persistent streaming pipeline for a microphone.
 // Reads from the inter-element stream channel, encodes to Opus, and sends via SRT.
+// If Stream.Channels is set below the capture channel count (e.g. stereo capture, mono
+// stream), an extra audioconvert downmixes just before the encoder — the recording path
+// (BuildAudioRecordStr) is untouched and keeps the full capture channel count.
 func BuildAudioStreamStr(mic config.Microphone, srtPort int) string {
 	_, strCh := interChannel("a", mic.Name)
 	caps := fmt.Sprintf("audio/x-raw,format=S16LE,rate=%d,channels=%d", mic.SampleRate, mic.Channels)
+
+	downmix := ""
+	if ch := mic.StreamChannels(); ch > 0 && ch != mic.Channels {
+		downmix = fmt.Sprintf("audioconvert ! audio/x-raw,channels=%d ! ", ch)
+	}
+
 	return fmt.Sprintf(
 		"interaudiosrc channel=%q ! %s ! "+
+			downmix+
 			"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
 			"srtsink name=srtsink uri=%q sync=false wait-for-connection=false",
 		strCh, caps, mic.StreamBitrate(),

@@ -7,13 +7,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// StreamConfig holds streaming parameters. Width, Height, Framerate fall back to capture values if unset.
-// A missing or zero Bitrate disables streaming.
+// StreamConfig holds streaming parameters. Width, Height, Framerate, Channels fall back to
+// capture values if unset. A missing or zero Bitrate disables streaming.
 type StreamConfig struct {
 	Width     int `yaml:"width"`
 	Height    int `yaml:"height"`
 	Framerate int `yaml:"framerate"`
 	Bitrate   int `yaml:"bitrate"`
+	Channels  int `yaml:"channels"` // audio only
 }
 
 type Camera struct {
@@ -79,6 +80,16 @@ func (m Microphone) StreamBitrate() int {
 		return m.Stream.Bitrate
 	}
 	return 0
+}
+
+// StreamChannels returns the channel count to encode for streaming, falling back to the
+// capture Channels if unset. Lets a stereo capture be downmixed to mono for the stream
+// (e.g. to save bitrate) while the local recording keeps full stereo.
+func (m Microphone) StreamChannels() int {
+	if m.Stream != nil && m.Stream.Channels > 0 {
+		return m.Stream.Channels
+	}
+	return m.Channels
 }
 
 type Config struct {

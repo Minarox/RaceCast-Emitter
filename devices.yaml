@@ -39,3 +39,4 @@ microphones:
     channels: 2
     stream:
       bitrate: 24000
+      channels: 1  # downmix to mono for streaming only; local recording stays stereo

@@ -199,6 +199,9 @@ func TestBuildAudioRecordStr_MuxesBlackVideoTrack(t *testing.T) {
 	if !strings.Contains(got, "videotestsrc pattern=black") {
 		t.Errorf("missing synthetic black video track: %s", got)
 	}
+	if !strings.Contains(got, "framerate=5/1") {
+		t.Errorf("expected low framerate for the placeholder black track: %s", got)
+	}
 	if !strings.Contains(got, "avenc_aac bitrate=192000") {
 		t.Errorf("missing default AAC bitrate: %s", got)
 	}
@@ -220,5 +223,37 @@ func TestBuildAudioStreamStr_UsesOpusAndConfiguredBitrate(t *testing.T) {
 	}
 	if !strings.Contains(got, "streamid=Cockpit:microphone") {
 		t.Errorf("missing microphone streamid: %s", got)
+	}
+}
+
+func TestBuildAudioStreamStr_DownmixesToMonoWhenConfigured(t *testing.T) {
+	t.Setenv("RC_SRT_HOST", "1.2.3.4")
+	t.Setenv("RC_SRT_PASSPHRASE", "")
+	mic := config.Microphone{
+		Name: "Habitacle", SampleRate: 48000, Channels: 2,
+		Stream: &config.StreamConfig{Bitrate: 24_000, Channels: 1},
+	}
+	got := BuildAudioStreamStr(mic, 9000)
+	if !strings.Contains(got, "audioconvert ! audio/x-raw,channels=1 ! opusenc") {
+		t.Errorf("missing mono downmix ahead of the encoder: %s", got)
+	}
+
+	// Recording must be unaffected: still full capture channel count, no downmix.
+	rec := BuildAudioRecordStr(mic, "records/out.mp4")
+	if strings.Contains(rec, "channels=1") {
+		t.Errorf("recording path should keep full stereo capture, got: %s", rec)
+	}
+}
+
+func TestBuildAudioStreamStr_NoDownmixWhenChannelsMatch(t *testing.T) {
+	t.Setenv("RC_SRT_HOST", "1.2.3.4")
+	t.Setenv("RC_SRT_PASSPHRASE", "")
+	mic := config.Microphone{
+		Name: "Cockpit", SampleRate: 48000, Channels: 1,
+		Stream: &config.StreamConfig{Bitrate: 96_000},
+	}
+	got := BuildAudioStreamStr(mic, 9000)
+	if strings.Contains(got, "audioconvert") {
+		t.Errorf("should not insert a downmix stage when stream channels == capture channels: %s", got)
 	}
 }

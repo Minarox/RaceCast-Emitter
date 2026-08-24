@@ -145,3 +145,20 @@ func TestMicrophone_StreamFallbacks(t *testing.T) {
 		t.Errorf("StreamBitrate() = %d, want 128000", mic.StreamBitrate())
 	}
 }
+
+func TestMicrophone_StreamChannels(t *testing.T) {
+	mic := Microphone{Channels: 2}
+	if got := mic.StreamChannels(); got != 2 {
+		t.Errorf("StreamChannels() with nil Stream = %d, want 2 (capture fallback)", got)
+	}
+
+	mic.Stream = &StreamConfig{Bitrate: 24_000}
+	if got := mic.StreamChannels(); got != 2 {
+		t.Errorf("StreamChannels() with unset Stream.Channels = %d, want 2 (capture fallback)", got)
+	}
+
+	mic.Stream.Channels = 1
+	if got := mic.StreamChannels(); got != 1 {
+		t.Errorf("StreamChannels() = %d, want 1 (downmix override)", got)
+	}
+}
