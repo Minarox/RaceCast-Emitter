@@ -32,25 +32,38 @@ var (
 
 	// Handle to the current NMEA serial port (set by nmeaReaderLoop).
 	nmeaFile *os.File
-	// nmeaStop is closed by Close() to terminate nmeaReaderLoop permanently.
+	// nmeaStop is closed to terminate the current nmeaReaderLoop (on Close,
+	// or when attachModem swaps in a replacement modem object).
 	nmeaStop chan struct{}
 
 	dbusConn *dbus.Conn // D-Bus system bus connection
+
+	// mmSignalStop is closed by Close() to terminate watchModemManager.
+	mmSignalStop chan struct{}
 )
 
 // mmLocationSourceGpsUnmanaged = MM_MODEM_LOCATION_SOURCE_GPS_UNMANAGED (bit 4).
 const mmLocationSourceGpsUnmanaged = uint32(1 << 4)
 
+// mmPortTypeGPS = MM_MODEM_PORT_TYPE_GPS (ModemManager port-type enum).
+const mmPortTypeGPS = uint32(5)
+
 // Open initializes the modem and starts the NMEA serial reader.
 // Enables gps-unmanaged mode (AT+QGPS=1); the GNSS sends frames autonomously.
 // RC_MODEM_NMEA_PORT overrides the default port. Idempotent.
+//
+// Also subscribes to ModemManager's InterfacesAdded/InterfacesRemoved signals
+// so that if the modem's USB device is later removed and re-enumerated (a new
+// ModemManager object path — this is what makes `mmcli -L`'s index climb over
+// time), the package transparently reattaches to the new object instead of
+// forever holding a D-Bus path to a modem that no longer exists.
 func Open() error {
 	mu.Lock()
-	defer mu.Unlock()
-
 	if modemPath != "" {
+		mu.Unlock()
 		return nil
 	}
+	mu.Unlock()
 
 	conn, err := dbus.SystemBusPrivate()
 	if err != nil {
@@ -64,12 +77,12 @@ func Open() error {
 		conn.Close()
 		return fmt.Errorf("D-Bus Hello: %w", err)
 	}
-	dbusConn = conn
 
 	// Locate the first modem via ObjectManager.
 	var managed map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 	mmObj := conn.Object("org.freedesktop.ModemManager1", "/org/freedesktop/ModemManager1")
 	if err := mmObj.Call("org.freedesktop.DBus.ObjectManager.GetManagedObjects", 0).Store(&managed); err != nil {
+		conn.Close()
 		return fmt.Errorf("ModemManager not found: %w", err)
 	}
 	var path dbus.ObjectPath
@@ -80,51 +93,205 @@ func Open() error {
 		}
 	}
 	if path == "" {
+		conn.Close()
 		return fmt.Errorf("no modem detected")
 	}
-	modemPath = path
 
+	if err := attachModem(conn, path); err != nil {
+		conn.Close()
+		return err
+	}
+
+	mu.Lock()
+	dbusConn = conn
+	mu.Unlock()
+
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchObjectPath("/org/freedesktop/ModemManager1"),
+		dbus.WithMatchInterface("org.freedesktop.DBus.ObjectManager"),
+	); err != nil {
+		logger.Warn("[modem] Could not subscribe to ModemManager signals — won't auto-recover from a USB re-enumeration: %v", err)
+		return nil
+	}
+	sigCh := make(chan *dbus.Signal, 8)
+	conn.Signal(sigCh)
+	stop := make(chan struct{})
+	mu.Lock()
+	mmSignalStop = stop
+	mu.Unlock()
+	go watchModemManager(conn, sigCh, stop)
+
+	return nil
+}
+
+// attachModem enables gps-unmanaged on the given modem object, resolves and
+// opens its NMEA port, and (re)starts the serial reader loop against it.
+// Used both by Open() (initial attach) and by watchModemManager (reattach
+// after the modem object was replaced).
+func attachModem(conn *dbus.Conn, path dbus.ObjectPath) error {
 	// Enable gps-unmanaged: ModemManager sends AT+QGPS=1 but does not capture frames;
 	// we read them from the serial port. signalLocation=false.
-	modemObj := conn.Object("org.freedesktop.ModemManager1", modemPath)
+	modemObj := conn.Object("org.freedesktop.ModemManager1", path)
 	if err := modemObj.Call("org.freedesktop.ModemManager1.Modem.Location.Setup", 0,
 		mmLocationSourceGpsUnmanaged, false).Err; err != nil {
 		return fmt.Errorf("Location.Setup (gps-unmanaged): %w", err)
 	}
 
-	portPath := os.Getenv("RC_MODEM_NMEA_PORT")
-	if portPath == "" {
-		portPath = defaultNMEAPort
-	}
-
+	portPath := resolveNMEAPort(conn, path)
 	f, err := os.Open(portPath)
 	if err != nil {
 		return fmt.Errorf("NMEA port %s: %w", portPath, err)
 	}
-	nmeaStop = make(chan struct{})
-	go nmeaReaderLoop(portPath, f, nmeaStop)
+
+	stopReader() // stop any reader left over from a previous modem object
+
+	mu.Lock()
+	modemPath = path
+	mu.Unlock()
+
+	stopCh := make(chan struct{})
+	mu.Lock()
+	nmeaStop = stopCh
+	mu.Unlock()
+	go nmeaReaderLoop(portPath, f, stopCh)
 
 	logger.Info("[modem] GPS started (gps-unmanaged, port: %s)", portPath)
 	return nil
 }
 
-// Close stops the NMEA reader loop and closes the current serial port. Idempotent.
-func Close() {
+// resolveNMEAPort returns the device path of the modem's GPS/NMEA port.
+// RC_MODEM_NMEA_PORT always overrides. Otherwise queries the modem's "Ports"
+// property (type (su): port name, MM port-type enum) for the GPS port — this
+// is what lets attachModem find the right device even when the kernel hands
+// out fresh ttyUSB numbers after a USB re-enumeration. Falls back to
+// defaultNMEAPort if the property can't be read or has no GPS entry.
+func resolveNMEAPort(conn *dbus.Conn, path dbus.ObjectPath) string {
+	if p := os.Getenv("RC_MODEM_NMEA_PORT"); p != "" {
+		return p
+	}
+
+	obj := conn.Object("org.freedesktop.ModemManager1", path)
+	var portsVariant dbus.Variant
+	if err := obj.Call("org.freedesktop.DBus.Properties.Get", 0,
+		"org.freedesktop.ModemManager1.Modem", "Ports").Store(&portsVariant); err == nil {
+		if ports, ok := portsVariant.Value().([][]interface{}); ok {
+			for _, p := range ports {
+				if len(p) != 2 {
+					continue
+				}
+				name, _ := p[0].(string)
+				typ, _ := p[1].(uint32)
+				if typ == mmPortTypeGPS && name != "" {
+					return "/dev/" + name
+				}
+			}
+		}
+	}
+	return defaultNMEAPort
+}
+
+// stopReader stops the current nmeaReaderLoop (if any) and closes its serial
+// port. Safe to call when no reader is running.
+func stopReader() {
 	mu.Lock()
-	stopCh := nmeaStop
+	stop := nmeaStop
 	f := nmeaFile
-	dbConn := dbusConn
 	nmeaStop = nil
-	nmeaFile = nil
+	mu.Unlock()
+
+	if stop != nil {
+		close(stop)
+	}
+	if f != nil {
+		f.Close() // unblocks the scanner inside readNMEALines
+	}
+}
+
+// watchModemManager reacts to ModemManager InterfacesAdded/InterfacesRemoved
+// signals so the package follows the modem across USB re-enumerations instead
+// of holding a D-Bus path that has become permanently invalid.
+func watchModemManager(conn *dbus.Conn, sigCh chan *dbus.Signal, stop <-chan struct{}) {
+	defer conn.RemoveSignal(sigCh)
+	for {
+		select {
+		case <-stop:
+			return
+		case sig, ok := <-sigCh:
+			if !ok {
+				return
+			}
+			handleMMSignal(conn, sig)
+		}
+	}
+}
+
+func handleMMSignal(conn *dbus.Conn, sig *dbus.Signal) {
+	switch sig.Name {
+	case "org.freedesktop.DBus.ObjectManager.InterfacesAdded":
+		if len(sig.Body) < 2 {
+			return
+		}
+		path, ok := sig.Body[0].(dbus.ObjectPath)
+		if !ok {
+			return
+		}
+		ifaces, ok := sig.Body[1].(map[string]map[string]dbus.Variant)
+		if !ok {
+			return
+		}
+		if _, ok := ifaces["org.freedesktop.ModemManager1.Modem"]; !ok {
+			return
+		}
+		logger.Info("[modem] New modem object appeared (%s) — reattaching", path)
+		if err := attachModem(conn, path); err != nil {
+			logger.Warn("[modem] Reattach failed: %v", err)
+		}
+
+	case "org.freedesktop.DBus.ObjectManager.InterfacesRemoved":
+		if len(sig.Body) < 2 {
+			return
+		}
+		path, ok := sig.Body[0].(dbus.ObjectPath)
+		if !ok {
+			return
+		}
+		removedIfaces, ok := sig.Body[1].([]string)
+		if !ok {
+			return
+		}
+		mu.Lock()
+		current := modemPath
+		mu.Unlock()
+		if path != current {
+			return
+		}
+		for _, iface := range removedIfaces {
+			if iface == "org.freedesktop.ModemManager1.Modem" {
+				logger.Warn("[modem] Modem object removed (USB re-enumeration?) — waiting for it to reappear")
+				mu.Lock()
+				modemPath = ""
+				mu.Unlock()
+				break
+			}
+		}
+	}
+}
+
+// Close stops the NMEA reader loop, the ModemManager signal watcher, and
+// closes the D-Bus connection. Idempotent.
+func Close() {
+	stopReader()
+
+	mu.Lock()
+	sigStop := mmSignalStop
+	dbConn := dbusConn
+	mmSignalStop = nil
 	dbusConn = nil
 	modemPath = ""
 	mu.Unlock()
 
-	if stopCh != nil {
-		close(stopCh)
-	}
-	if f != nil {
-		f.Close() // unblocks the scanner inside readNMEALines
+	if sigStop != nil {
+		close(sigStop)
 	}
 	if dbConn != nil {
 		dbConn.Close()
@@ -403,14 +570,19 @@ func BitrateAdvisory(maxBitrate int) int {
 // WatchConnectivity calls onChange whenever modem internet connectivity changes.
 // connected=true when signal quality > 0 and a data technology is active.
 // Polls every 2 s. Stops when ctx is cancelled.
-// If no modem responds after 10 s, assumes no modem on this device and returns
-// without calling onChange (stream valves stay in their default open state).
+// If no modem ever responds within the first 10 s, assumes no modem is
+// installed on this device and returns without calling onChange (stream
+// valves stay in their default open state). Once a modem has responded at
+// least once, polling never gives up — a later error (e.g. the D-Bus object
+// briefly gone during a USB re-enumeration, handled by attachModem in the
+// background) is treated as a connectivity drop, not a permanent absence.
 func WatchConnectivity(ctx context.Context, onChange func(connected bool)) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	var last *bool
 	noModemCount := 0
+	everConnected := false
 
 	for {
 		select {
@@ -422,13 +594,20 @@ func WatchConnectivity(ctx context.Context, onChange func(connected bool)) {
 		stats, err := GetSignalStatsCtx(ctx)
 		if err != nil {
 			noModemCount++
-			if noModemCount >= 5 {
-				// 10 s without any modem response — assume no modem on this device.
+			if !everConnected && noModemCount >= 5 {
+				// 10 s without any modem response, and none ever seen — assume
+				// no modem is installed on this device.
 				logger.Info("[modem] No modem detected — stream valve control disabled")
 				return
 			}
+			if last == nil || *last {
+				connected := false
+				last = &connected
+				onChange(false)
+			}
 			continue
 		}
+		everConnected = true
 		noModemCount = 0
 
 		connected := stats.Quality > 0 && stats.Tech != ""
