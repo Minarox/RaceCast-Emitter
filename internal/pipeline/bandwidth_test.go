@@ -1,8 +1,46 @@
 package pipeline
 
 import (
+	"context"
 	"testing"
 )
+
+// TestBandwidthCoordinator_UnregisterOnlyRemovesMatchingPipeline reproduces
+// a fast stop/restart cycle for the same camera name: onStopped (which
+// calls Unregister) runs asynchronously after a pipeline's teardown
+// completes, so a new pipeline can already be Register-ed under the same
+// name by the time the OLD pipeline's Unregister call actually runs. It
+// must not delete the newer registration.
+func TestBandwidthCoordinator_UnregisterOnlyRemovesMatchingPipeline(t *testing.T) {
+	c := NewBandwidthCoordinator(context.Background())
+
+	oldGP := &GstPipeline{}
+	newGP := &GstPipeline{}
+
+	c.Register(RegisterOptions{Name: "Cockpit", Pipeline: oldGP, MinBitrate: 1_000_000, MaxBitrate: 8_000_000})
+	c.Register(RegisterOptions{Name: "Cockpit", Pipeline: newGP, MinBitrate: 1_000_000, MaxBitrate: 8_000_000})
+
+	c.Unregister("Cockpit", oldGP)
+
+	c.mu.Lock()
+	got, ok := c.streams["Cockpit"]
+	c.mu.Unlock()
+	if !ok {
+		t.Fatal(`Unregister("Cockpit", oldGP) removed the newer registration — want it left untouched`)
+	}
+	if got.gp != newGP {
+		t.Errorf("streams[Cockpit].gp = %p, want the newer pipeline %p", got.gp, newGP)
+	}
+
+	// Unregistering with the currently-registered pipeline must still work.
+	c.Unregister("Cockpit", newGP)
+	c.mu.Lock()
+	_, ok = c.streams["Cockpit"]
+	c.mu.Unlock()
+	if ok {
+		t.Error(`Unregister("Cockpit", newGP) did not remove the matching registration`)
+	}
+}
 
 func TestComputeAllocation_MainCameraGetsFullShareFirst(t *testing.T) {
 	streams := []streamSpec{

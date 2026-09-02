@@ -312,12 +312,12 @@ func main() {
 	if doStream {
 		for _, cam := range cfg.Cameras {
 			if s, ok := cameraSlots[cam.UID]; ok && s.IsStreamRunning() {
-				_ = telemConn.SendStreamClose(cam.Name)
+				_ = telemConn.SendStreamClose(pipeline.StreamKey(cam.Name, "camera"))
 			}
 		}
 		for _, mic := range cfg.Microphones {
 			if s, ok := micSlots[mic.UID]; ok && s.IsStreamRunning() {
-				_ = telemConn.SendStreamClose(mic.Name)
+				_ = telemConn.SendStreamClose(pipeline.StreamKey(mic.Name, "microphone"))
 			}
 		}
 	}

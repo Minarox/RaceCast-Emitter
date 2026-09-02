@@ -40,6 +40,36 @@ func TestInterChannel(t *testing.T) {
 	}
 }
 
+func TestStreamKey(t *testing.T) {
+	if got := StreamKey("Habitacle", "camera"); got != "Habitacle:camera" {
+		t.Errorf("StreamKey(Habitacle, camera) = %q, want %q", got, "Habitacle:camera")
+	}
+	if got := StreamKey("Habitacle", "microphone"); got != "Habitacle:microphone" {
+		t.Errorf("StreamKey(Habitacle, microphone) = %q, want %q", got, "Habitacle:microphone")
+	}
+	// The whole point of StreamKey: a camera and mic sharing Name (allowed by
+	// config.validate()) must not produce the same key.
+	if StreamKey("Habitacle", "camera") == StreamKey("Habitacle", "microphone") {
+		t.Error("StreamKey must differentiate camera and microphone sharing the same Name")
+	}
+}
+
+// TestStreamKeyMatchesSrtCallerURI guards against StreamKey and srtCallerURI's
+// streamid drifting apart — RaceCast-Receiver's stream_close handling
+// (fed by StreamKey, via SendStreamClose) must key by the exact same string
+// as the SRT streamid it already parses on connect, or a stream_close signal
+// silently fails to match the stream it's meant to close.
+func TestStreamKeyMatchesSrtCallerURI(t *testing.T) {
+	t.Setenv("RC_SRT_HOST", "1.2.3.4")
+	for _, source := range []string{"camera", "microphone"} {
+		key := StreamKey("Habitacle", source)
+		uri := srtCallerURI(9000, "Habitacle", source)
+		if !strings.Contains(uri, "streamid="+key) {
+			t.Errorf("srtCallerURI(...,%q) = %q, does not contain streamid=%s (from StreamKey)", source, uri, key)
+		}
+	}
+}
+
 func TestSrtCallerURI(t *testing.T) {
 	t.Run("default latency", func(t *testing.T) {
 		t.Setenv("RC_SRT_HOST", "1.2.3.4")

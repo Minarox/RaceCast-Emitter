@@ -31,11 +31,22 @@ func flipMethod(vertical, horizontal bool) int {
 	}
 }
 
+// StreamKey builds the "name:source" identity RaceCast-Receiver uses to key
+// its per-stream state — see srtCallerURI's streamid below, which this must
+// stay identical to. Exported so callers outside this package (main.go's
+// stream_close notifications) that need to name a stream to the receiver
+// without also connecting can build the same identity: a camera and a
+// microphone may share Name (validate() allows it, e.g. one device's video
+// and audio interfaces), so name alone can't identify which one closed.
+func StreamKey(name, source string) string {
+	return name + ":" + source
+}
+
 // srtCallerURI builds an SRT caller URI; streamid = "name:source" (e.g. "Route:camera").
 func srtCallerURI(port int, name, source string) string {
 	host := os.Getenv("RC_SRT_HOST")
 	latency := envInt("RC_SRT_LATENCY", 800)
-	streamID := name + ":" + source
+	streamID := StreamKey(name, source)
 	// iptos=136 = DSCP AF41: marks packets as video streaming for router QoS.
 	// Unencrypted: this SRT traffic runs inside a WireGuard tunnel to the
 	// receiver, so an SRT-layer passphrase would just double-encrypt it.

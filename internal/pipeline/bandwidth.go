@@ -94,7 +94,6 @@ type videoStream struct {
 	encoderName string
 	minBitrate  int
 	maxBitrate  int
-	onStopped   func()
 
 	// Tier-0 (configured) stream resolution/framerate, as actually running —
 	// changeTier scales down from these, never from whatever the current
@@ -135,9 +134,6 @@ type RegisterOptions struct {
 	// zero Width/Height leaves it disabled for this camera (bitrate and
 	// pause/resume are unaffected).
 	Width, Height, Framerate int
-	// OnStopped, if set, runs once this camera's pipeline has fully stopped
-	// (see activatePipeline) — used to Unregister it from the coordinator.
-	OnStopped func()
 }
 
 // BandwidthCoordinator owns the shared video bandwidth budget for every
@@ -174,7 +170,6 @@ func (c *BandwidthCoordinator) Register(opts RegisterOptions) {
 		encoderName:   opts.EncoderName,
 		minBitrate:    opts.MinBitrate,
 		maxBitrate:    opts.MaxBitrate,
-		onStopped:     opts.OnStopped,
 		baseWidth:     opts.Width,
 		baseHeight:    opts.Height,
 		baseFramerate: opts.Framerate,
@@ -185,11 +180,17 @@ func (c *BandwidthCoordinator) Register(opts RegisterOptions) {
 // call from the same onStopped hook activatePipeline/replacePipeline already
 // provide (see pipeline.go), so a torn-down camera can't keep holding a
 // share of the budget or skew the aggregate degradation signal with stale
-// stats.
-func (c *BandwidthCoordinator) Unregister(name string) {
+// stats. gp must be the exact pipeline that stopped: onStopped runs
+// asynchronously after teardown, so a fast stop/restart cycle for the same
+// camera name could otherwise let a late Unregister for the OLD pipeline
+// delete a NEW one already Register-ed in its place — gp identity, not just
+// name, is what onStopped is actually reporting the end of.
+func (c *BandwidthCoordinator) Unregister(name string, gp *GstPipeline) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.streams, name)
+	if s, ok := c.streams[name]; ok && s.gp == gp {
+		delete(c.streams, name)
+	}
 }
 
 // Run starts the shared allocation loop, ticking at the same interval
@@ -278,14 +279,28 @@ func (c *BandwidthCoordinator) tick() {
 			worstRTT = rttMS
 		}
 	}
-	if anyConnected {
-		minSharedFloor := effectiveMax / 5
+	minSharedFloor := effectiveMax / 5
+	switch {
+	case anyConnected:
 		c.sharedBudget = adaptBitrate(c.sharedBudget, localStats{LossPct: worstLoss, RTTMS: worstRTT}, minSharedFloor, effectiveMax, &c.sharedStableCount)
-	} else if !c.anyEverConnected() {
+	case !c.anyEverConnected():
 		// Nothing has ever connected yet (e.g. right after startup, before
 		// any camera's first SRT handshake) — there are no stats to adapt
 		// the shared budget from, and nothing to pause/resume yet either.
 		return
+	default:
+		// Everything is currently paused/disconnected, but something
+		// connected before: there's no live stats to adapt from, but
+		// freezing sharedBudget here forever would leave it stuck below
+		// every camera's floor if it collapsed there right as the last
+		// connection dropped — nothing could ever prove conditions
+		// improved, since improving requires resuming a camera, and
+		// resuming requires the budget to clear the floor first. Ramp it
+		// back toward effectiveMax on assumed-perfect stats instead — the
+		// same step adaptBitrate already takes on real good stats — so
+		// it's always possible to climb back out and let allocate() try
+		// resuming a camera to re-test real conditions.
+		c.sharedBudget = adaptBitrate(c.sharedBudget, localStats{}, minSharedFloor, effectiveMax, &c.sharedStableCount)
 	}
 	// Note: even when every stream is currently paused (anyConnected false
 	// but something connected before), allocate/evaluateTiers must still run

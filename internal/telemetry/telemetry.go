@@ -160,14 +160,23 @@ func (c *Conn) Send(data []byte) error {
 	return nil
 }
 
-// SendStreamClose notifies the receiver that the named stream is being closed
+// SendStreamClose notifies the receiver that the given stream is being closed
 // intentionally (camera disconnect or program shutdown). The receiver uses this
 // to skip the reconnect grace period and unpublish the LiveKit track immediately.
+// streamKey must be the same "name:source" identity used for that stream's SRT
+// streamid (see pipeline.StreamKey) — not just the bare device name, since a
+// camera and microphone may share Name and the receiver keys its state by the
+// full identity to tell them apart.
 // Best-effort: errors are silently ignored (the receiver falls back to the full
 // grace timeout if the signal is not delivered).
-func (c *Conn) SendStreamClose(name string) error {
-	data := fmt.Appendf(nil, `{"type":"stream_close","stream":%q}`, name)
-	return c.Send(data)
+func (c *Conn) SendStreamClose(streamKey string) error {
+	return c.Send(streamCloseMessage(streamKey))
+}
+
+// streamCloseMessage builds the JSON payload SendStreamClose sends — split
+// out from it so the message shape is testable without a live SRT socket.
+func streamCloseMessage(streamKey string) []byte {
+	return fmt.Appendf(nil, `{"type":"stream_close","stream":%q}`, streamKey)
 }
 
 // IsConnected reports whether the SRT socket is currently dialed. Cheap

@@ -106,8 +106,11 @@ func (s *Slot) clearStarting(field **GstPipeline) {
 // pipeline's output file is guaranteed closed (filesink closes its fd during
 // the PAUSED→READY transition SetNull triggers) — for post-processing that
 // needs the finished file, such as bwf.go's bext injection on a completed
-// audio recording. Most callers pass nil.
-func (s *Slot) activatePipeline(label string, gp *GstPipeline, field **GstPipeline, wg *sync.WaitGroup, onStopped func()) {
+// audio recording, or unregistering gp from the BandwidthCoordinator by
+// identity rather than just by name (a fast stop/restart cycle could
+// otherwise let a late unregister for the OLD pipeline delete a newer one
+// already registered under the same camera name). Most callers pass nil.
+func (s *Slot) activatePipeline(label string, gp *GstPipeline, field **GstPipeline, wg *sync.WaitGroup, onStopped func(*GstPipeline)) {
 	select {
 	case <-gp.controlCtx.Done():
 		logger.Info("[%s] Context cancelled during startup — pipeline discarded", label)
@@ -131,7 +134,19 @@ func (s *Slot) activatePipeline(label string, gp *GstPipeline, field **GstPipeli
 // trackPipelineLifecycle spawns a goroutine that waits for gp to stop, then
 // clears *field and cleans up. onStopped, if non-nil, runs after SetNull()
 // completes — see activatePipeline's doc comment for why.
-func trackPipelineLifecycle(label string, gp *GstPipeline, field **GstPipeline, s *Slot, wg *sync.WaitGroup, onStopped func()) {
+//
+// SetNull/Free/onStopped run on this same wg-tracked goroutine, not a
+// further untracked one: wg is main's shutdown WaitGroup, and onStopped is
+// what does bwf.go's bext timecode injection (a file copy/rename) — an
+// untracked inner goroutine here meant wg.Wait() (and so main()) could
+// return, and the process exit, before that inner goroutine had even been
+// scheduled, let alone finished, silently losing the BWF injection on every
+// normal shutdown. (This differs from activatePipeline's own two "already
+// active"/"context cancelled" discard paths above, and from StartEach's own
+// "go gp.Free()" convention: those aren't on the shutdown-critical wg at
+// all, and StartEach's variant specifically avoids blocking while it holds
+// silenceMu across other pipelines' startup — neither reason applies here.)
+func trackPipelineLifecycle(label string, gp *GstPipeline, field **GstPipeline, s *Slot, wg *sync.WaitGroup, onStopped func(*GstPipeline)) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -140,13 +155,11 @@ func trackPipelineLifecycle(label string, gp *GstPipeline, field **GstPipeline, 
 		s.mu.Lock()
 		*field = nil
 		s.mu.Unlock()
-		go func() {
-			gp.SetNull()
-			gp.Free()
-			if onStopped != nil {
-				onStopped()
-			}
-		}()
+		gp.SetNull()
+		gp.Free()
+		if onStopped != nil {
+			onStopped(gp)
+		}
 	}()
 }
 
@@ -256,8 +269,11 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		// the receiver that the stream was closed intentionally.
 		streamName string
 		// onStopped, if set, runs once this pipeline has fully stopped and its
-		// output file is closed — see activatePipeline.
-		onStopped func()
+		// output file is closed — see activatePipeline. Takes the *GstPipeline
+		// that just stopped, so an unregister-by-name callback (see the camera
+		// stream entry below) can compare identity instead of blindly
+		// deleting whatever is currently registered under that name.
+		onStopped func(*GstPipeline)
 		// onStarted, if set, runs once this pipeline's state change to
 		// PLAYING has been successfully issued (see StartEach) — i.e. as
 		// close to "recording actually began" as this layer can observe
@@ -318,6 +334,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			}
 			field := e.field
 			streamName := e.streamName
+			isSource := field == &s.source
 			gp.SetOnError(func() {
 				// Notify the receiver immediately so it skips the grace period
 				// and unpublishes the LiveKit track without delay.
@@ -328,7 +345,29 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 				if *field == gp {
 					*field = nil
 				}
+				// The source pipeline dying (device unplugged) doesn't stop
+				// record/stream: they read from an inter* channel fed by the
+				// source, and intervideosrc/interaudiosrc synthesize
+				// black/silent frames rather than erroring when their
+				// producer disappears — so without this, a stream pipeline
+				// keeps encoding and sending black frames indefinitely (the
+				// receiver, notified above, has already unpublished the
+				// track), burning bandwidth with nothing to show for it, and
+				// Poll()'s IsStreamRunning() stays true forever so it's never
+				// rebuilt even once the device comes back. Mirrors Slot.Stop().
+				var stopStream *GstPipeline
+				var stopRecord *GstPipeline
+				if isSource {
+					stopStream = s.stream
+					stopRecord = s.record
+				}
 				s.mu.Unlock()
+				if stopStream != nil {
+					stopStream.Cancel()
+				}
+				if stopRecord != nil {
+					stopRecord.SendEOS()
+				}
 				go func() { gp.SetNull(); gp.Free() }()
 				logger.Warn("[%s] Pipeline error — device disconnected?", e.label)
 			})
@@ -381,7 +420,6 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 						Width:       pe.streamWidth,
 						Height:      pe.streamHeight,
 						Framerate:   pe.streamFramerate,
-						OnStopped:   pe.onStopped,
 					})
 				} else {
 					logger.Warn("[%s] No BandwidthCoordinator configured — video stream has no ABR", pe.label)
@@ -431,7 +469,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			str:        BuildVideoSourceStr(cam, dev),
 			slot:       s,
 			field:      &s.source,
-			streamName: cam.Name,
+			streamName: StreamKey(cam.Name, "camera"),
 		})
 	}
 
@@ -471,7 +509,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			str:        BuildAudioSourceStr(mic, alsaDev),
 			slot:       s,
 			field:      &s.source,
-			streamName: mic.Name,
+			streamName: StreamKey(mic.Name, "microphone"),
 		})
 	}
 
@@ -536,9 +574,9 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 				streamWidth:     cam.StreamWidth(),
 				streamHeight:    cam.StreamHeight(),
 				streamFramerate: cam.StreamFramerate(),
-				onStopped: func() {
+				onStopped: func(gp *GstPipeline) {
 					if opts.Bandwidth != nil {
-						opts.Bandwidth.Unregister(camName)
+						opts.Bandwidth.Unregister(camName, gp)
 					}
 				},
 			})
@@ -587,7 +625,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 				onStarted: func() {
 					startedAt = time.Now()
 				},
-				onStopped: func() {
+				onStopped: func(*GstPipeline) {
 					if err := injectBWFTimeReference(outputPath, startedAt, mic.SampleRate); err != nil {
 						logger.Error("[%s] BWF timecode injection failed: %v", label, err)
 					}

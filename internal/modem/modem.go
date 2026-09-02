@@ -67,7 +67,17 @@ func Open() error {
 	defer openMu.Unlock()
 
 	mu.Lock()
-	if modemPath != "" {
+	// dbusConn != nil, not just modemPath != "", is the real "already open"
+	// condition: InterfacesRemoved (handleMMSignal below) clears modemPath
+	// alone while the modem is missing mid-re-enumeration, leaving dbusConn
+	// and its watchModemManager goroutine alive and already responsible for
+	// reattaching via attachModem as soon as InterfacesAdded fires again.
+	// Checking modemPath alone let ensureOpen() (polled every ~1s by several
+	// callers) dial a second D-Bus connection and spawn a second watcher on
+	// every such gap without ever closing the first — accumulating a leaked
+	// connection/goroutine per re-enumeration, and letting both watchers
+	// call attachModem concurrently on the next event.
+	if modemPath != "" || dbusConn != nil {
 		mu.Unlock()
 		return nil
 	}
