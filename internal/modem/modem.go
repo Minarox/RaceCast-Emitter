@@ -21,6 +21,11 @@ import (
 const defaultNMEAPort = "/dev/ttyUSB1"
 
 var (
+	// openMu serializes Open() so concurrent callers (RunStream, WatchConnectivity,
+	// WatchHealth all call ensureOpen() on their own ticker) never race to dial
+	// D-Bus and attach to the modem at the same time.
+	openMu sync.Mutex
+
 	mu        sync.Mutex
 	modemPath dbus.ObjectPath // D-Bus object path of the detected modem
 
@@ -58,6 +63,9 @@ const mmPortTypeGPS = uint32(5)
 // time), the package transparently reattaches to the new object instead of
 // forever holding a D-Bus path to a modem that no longer exists.
 func Open() error {
+	openMu.Lock()
+	defer openMu.Unlock()
+
 	mu.Lock()
 	if modemPath != "" {
 		mu.Unlock()
@@ -113,6 +121,30 @@ func Open() error {
 		logger.Warn("[modem] Could not subscribe to ModemManager signals — won't auto-recover from a USB re-enumeration: %v", err)
 		return nil
 	}
+	// StateChanged: no object-path filter, since the modem's D-Bus path
+	// changes across reattaches (see handleMMSignal's InterfacesAdded case) —
+	// matched broadly and logged on every transition. This is the in-app
+	// replacement for tailing `journalctl -u ModemManager` externally: a
+	// structured D-Bus signal instead of parsing log text, so it doesn't
+	// depend on ModemManager's log wording.
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchInterface("org.freedesktop.ModemManager1.Modem"),
+		dbus.WithMatchMember("StateChanged"),
+	); err != nil {
+		logger.Warn("[modem] Could not subscribe to modem state-change signals: %v", err)
+	}
+	// 3GPP registration state (e.g. "searching" <-> "home"/"roaming") — the
+	// arg0 filter matters here: without it we'd also get every Bearer
+	// PropertiesChanged (connection stats update every few seconds while
+	// connected), which would flood the 8-slot sigCh and could crowd out
+	// the signals above.
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchInterface("org.freedesktop.DBus.Properties"),
+		dbus.WithMatchMember("PropertiesChanged"),
+		dbus.WithMatchOption("arg0", "org.freedesktop.ModemManager1.Modem.Modem3gpp"),
+	); err != nil {
+		logger.Warn("[modem] Could not subscribe to 3GPP registration-state signals: %v", err)
+	}
 	sigCh := make(chan *dbus.Signal, 8)
 	conn.Signal(sigCh)
 	stop := make(chan struct{})
@@ -124,11 +156,41 @@ func Open() error {
 	return nil
 }
 
+// ensureOpen makes sure the package is attached to a modem, attempting Open()
+// if not. Cheap to call from a loop on every tick when already attached (a
+// single mutex-guarded read). Open() is idempotent and serializes concurrent
+// attempts via openMu, so independent pollers (WatchConnectivity, WatchHealth,
+// RunStream) never need to coordinate among themselves or give up permanently
+// — they just keep calling this and pick up as soon as the modem appears.
+func ensureOpen() bool {
+	mu.Lock()
+	ready := modemPath != ""
+	mu.Unlock()
+	if ready {
+		return true
+	}
+	return Open() == nil
+}
+
+// currentModem returns the D-Bus connection and object path of the currently
+// attached modem, or ok=false if none is attached.
+func currentModem() (conn *dbus.Conn, path dbus.ObjectPath, ok bool) {
+	mu.Lock()
+	conn, path = dbusConn, modemPath
+	mu.Unlock()
+	return conn, path, conn != nil && path != ""
+}
+
 // attachModem enables gps-unmanaged on the given modem object, resolves and
 // opens its NMEA port, and (re)starts the serial reader loop against it.
 // Used both by Open() (initial attach) and by watchModemManager (reattach
 // after the modem object was replaced).
 func attachModem(conn *dbus.Conn, path dbus.ObjectPath) error {
+	// Re-apply the configured mode/band profile on every (re)attach — see
+	// radio_profile.go. Backgrounded so a slow mmcli call never delays GPS
+	// startup below; independent of GPS setup succeeding or not.
+	go applyRadioProfile(context.Background())
+
 	// Enable gps-unmanaged: ModemManager sends AT+QGPS=1 but does not capture frames;
 	// we read them from the serial port. signalLocation=false.
 	modemObj := conn.Object("org.freedesktop.ModemManager1", path)
@@ -225,8 +287,103 @@ func watchModemManager(conn *dbus.Conn, sigCh chan *dbus.Signal, stop <-chan str
 	}
 }
 
+// mmStateNames/mmStateChangeReasonNames map the MMModemState/
+// MMModemStateChangeReason D-Bus enums (org.freedesktop.ModemManager1.Modem's
+// StateChanged signal) to the same names ModemManager's own logs use. Falls
+// back to the raw number for anything outside the known range, so an
+// unrecognized value still logs something useful instead of a wrong label.
+var mmStateNames = map[int32]string{
+	-1: "failed", 0: "unknown", 1: "initializing", 2: "locked",
+	3: "disabled", 4: "disabling", 5: "enabling", 6: "enabled",
+	7: "searching", 8: "registered", 9: "disconnecting", 10: "connecting", 11: "connected",
+}
+
+func mmStateName(s int32) string {
+	if name, ok := mmStateNames[s]; ok {
+		return name
+	}
+	return fmt.Sprintf("state(%d)", s)
+}
+
+var mmStateChangeReasonNames = map[uint32]string{
+	0: "unknown", 1: "user-requested", 2: "suspend", 3: "failure",
+}
+
+func mmStateChangeReasonName(r uint32) string {
+	if name, ok := mmStateChangeReasonNames[r]; ok {
+		return name
+	}
+	return fmt.Sprintf("reason(%d)", r)
+}
+
+// mm3gppRegStateNames maps the MM_MODEM_3GPP_REGISTRATION_STATE D-Bus enum
+// (Modem3gpp's RegistrationState property) to the same names ModemManager's
+// own logs use — verified live: a modem reset took RegistrationState from 4
+// ("unknown", right when the object first appears) to 1 ("home").
+var mm3gppRegStateNames = map[uint32]string{
+	0: "idle", 1: "home", 2: "searching", 3: "denied", 4: "unknown", 5: "roaming",
+	6: "home-sms-only", 7: "roaming-sms-only", 8: "emergency-only",
+	9: "home-csfb-not-preferred", 10: "roaming-csfb-not-preferred", 11: "attached-rlos",
+}
+
+func mm3gppRegStateName(s uint32) string {
+	if name, ok := mm3gppRegStateNames[s]; ok {
+		return name
+	}
+	return fmt.Sprintf("regstate(%d)", s)
+}
+
 func handleMMSignal(conn *dbus.Conn, sig *dbus.Signal) {
 	switch sig.Name {
+	case "org.freedesktop.ModemManager1.Modem.StateChanged":
+		if len(sig.Body) < 3 {
+			return
+		}
+		oldState, ok1 := sig.Body[0].(int32)
+		newState, ok2 := sig.Body[1].(int32)
+		reason, ok3 := sig.Body[2].(uint32)
+		if !ok1 || !ok2 || !ok3 {
+			return
+		}
+		oldName, newName := mmStateName(oldState), mmStateName(newState)
+		reasonName := mmStateChangeReasonName(reason)
+		msg := fmt.Sprintf("state changed: %s -> %s (%s)", oldName, newName, reasonName)
+		fields := map[string]any{"old_state": oldName, "new_state": newName, "reason": reasonName}
+		if newState == -1 { // failed
+			logger.ErrorFields("modem", msg, fields)
+			go logTegrastats("modem entered failed state")
+		} else {
+			logger.InfoFields("modem", msg, fields)
+		}
+
+	case "org.freedesktop.DBus.Properties.PropertiesChanged":
+		if len(sig.Body) < 2 {
+			return
+		}
+		iface, ok := sig.Body[0].(string)
+		if !ok || iface != "org.freedesktop.ModemManager1.Modem.Modem3gpp" {
+			return
+		}
+		changed, ok := sig.Body[1].(map[string]dbus.Variant)
+		if !ok {
+			return
+		}
+		regVariant, has := changed["RegistrationState"]
+		if !has {
+			return
+		}
+		regState, ok := regVariant.Value().(uint32)
+		if !ok {
+			return
+		}
+		msg := "[modem] 3GPP registration: " + mm3gppRegStateName(regState)
+		if opVariant, ok := changed["OperatorName"]; ok {
+			if op, ok := opVariant.Value().(string); ok && op != "" {
+				msg += " (" + op + ")"
+			}
+		}
+		logger.Info("%s", msg)
+
 	case "org.freedesktop.DBus.ObjectManager.InterfacesAdded":
 		if len(sig.Body) < 2 {
 			return
@@ -243,6 +400,7 @@ func handleMMSignal(conn *dbus.Conn, sig *dbus.Signal) {
 			return
 		}
 		logger.Info("[modem] New modem object appeared (%s) — reattaching", path)
+		go logTegrastats("modem reattached after re-enumeration")
 		if err := attachModem(conn, path); err != nil {
 			logger.Warn("[modem] Reattach failed: %v", err)
 		}
@@ -268,6 +426,7 @@ func handleMMSignal(conn *dbus.Conn, sig *dbus.Signal) {
 		for _, iface := range removedIfaces {
 			if iface == "org.freedesktop.ModemManager1.Modem" {
 				logger.Warn("[modem] Modem object removed (USB re-enumeration?) — waiting for it to reappear")
+				go logTegrastats("modem object removed")
 				mu.Lock()
 				modemPath = ""
 				mu.Unlock()
@@ -366,6 +525,17 @@ func readNMEALines(f *os.File) {
 			continue
 		}
 
+		// Feed chrony (if RC_GPS_SHM_UNIT is configured) as soon as a line
+		// carrying an active fix's UTC time is read — independent of, and
+		// tighter than, the epoch cache below, which only publishes once the
+		// *next* GGA arrives (up to one whole fix cycle later).
+		if len(line) >= 6 && line[3:6] == "RMC" {
+			receivedAt := time.Now()
+			if p, ok := parseRMC(line); ok && !p.Time.IsZero() {
+				publishGPSTime(p.Time, receivedAt)
+			}
+		}
+
 		// New GGA frame = new epoch; publish the previous one first.
 		if len(line) >= 6 && line[3:6] == "GGA" && len(pending) > 0 {
 			snap := make([]string, len(pending))
@@ -448,25 +618,15 @@ type SignalStats struct {
 	Tech    string // active (highest priority) technology (e.g. "lte", "5gnr")
 }
 
-// GetSignalStats returns the signal quality and active network technology.
-// Uses context.Background(); prefer GetSignalStatsCtx when a cancellable
-// context is available so D-Bus calls are cancelled on shutdown.
-func GetSignalStats() (SignalStats, error) {
-	return GetSignalStatsCtx(context.Background())
-}
-
-// GetSignalStatsCtx is the context-aware variant of GetSignalStats.
+// GetSignalStatsCtx queries ModemManager for the signal quality and active
+// network technology.
 // Each D-Bus call has an independent 5 s timeout: some ModemManager builds
 // query the modem hardware synchronously, which can block for 10–30 s without
 // a deadline. The parent ctx cancellation is still propagated — the effective
 // deadline is min(ctx deadline, now+5s).
 func GetSignalStatsCtx(ctx context.Context) (SignalStats, error) {
-	mu.Lock()
-	conn := dbusConn
-	path := modemPath
-	mu.Unlock()
-
-	if conn == nil || path == "" {
+	conn, path, ok := currentModem()
+	if !ok {
 		return SignalStats{}, fmt.Errorf("modem not initialized")
 	}
 
@@ -509,10 +669,108 @@ func GetSignalStatsCtx(ctx context.Context) (SignalStats, error) {
 		}
 	}
 
-	return SignalStats{
+	stats := SignalStats{
 		Quality: quality,
 		Tech:    lastTech,
-	}, nil
+	}
+	statusMu.Lock()
+	statusStats = stats
+	statusHasStats = true
+	statusMu.Unlock()
+	return stats, nil
+}
+
+// WatchSignalStats is the single source of truth for polling ModemManager's
+// SignalQuality/AccessTechnologies over D-Bus. Before this existed,
+// WatchConnectivity, WatchHealth, feedback.localStatsLoop (once per streaming
+// camera) and modem.RunStream each polled independently on their own ticker —
+// with two streaming cameras that was ~2.5 redundant D-Bus round trips per
+// second, all asking ModemManager the same two properties. They now all read
+// CachedSignalStats instead; this is the only remaining caller of
+// GetSignalStatsCtx outside of --debug-modem's standalone diagnostics (which
+// never runs alongside these watchers, so has no redundancy to remove).
+// Polls at 1 s: the tightest requirement among the callers (modem.RunStream's
+// telemetry cadence). Stops when ctx is cancelled.
+func WatchSignalStats(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		fresh := false
+		if ensureOpen() {
+			if _, err := GetSignalStatsCtx(ctx); err == nil {
+				fresh = true
+			}
+		}
+		statusMu.Lock()
+		statusStatsFresh = fresh
+		statusMu.Unlock()
+	}
+}
+
+// CachedSignalStats returns the signal-stats snapshot from the most recent
+// WatchSignalStats poll, without making a D-Bus call. ok mirrors the
+// err==nil contract of GetSignalStatsCtx for that poll: false if the modem
+// wasn't reachable on the last tick (callers get an honest "no signal" rather
+// than a stale reading frozen from before an outage started).
+func CachedSignalStats() (stats SignalStats, ok bool) {
+	statusMu.RLock()
+	defer statusMu.RUnlock()
+	if !statusStatsFresh {
+		return SignalStats{}, false
+	}
+	return statusStats, true
+}
+
+// ── Status snapshot (for display, e.g. the console dashboard) ──────────────
+//
+// Never performs I/O: reads values cached by the existing background pollers
+// (GetSignalStatsCtx, WatchConnectivity) rather than triggering yet another
+// D-Bus round-trip on every dashboard refresh tick.
+
+var (
+	statusMu         sync.RWMutex
+	statusStats      SignalStats
+	statusHasStats   bool
+	statusStatsFresh bool // set by WatchSignalStats each tick; see CachedSignalStats
+	statusConnected  bool
+	statusConnKnown  bool
+)
+
+// Status is a point-in-time snapshot of modem connectivity for display.
+type Status struct {
+	Detected   bool // a modem D-Bus object is currently attached
+	Connected  bool // last known internet reachability (see WatchConnectivity)
+	ConnKnown  bool // whether Connected has been determined yet
+	Recovering bool // a soft-nudge/reset recovery is in flight (see watchdog.go)
+	Quality    uint32
+	Tech       string
+	HasStats   bool // whether Quality/Tech have ever been populated
+}
+
+// GetStatus returns the current modem status snapshot. Cheap and safe to
+// call every tick from a UI loop.
+func GetStatus() Status {
+	_, _, detected := currentModem()
+	statusMu.RLock()
+	stats, hasStats := statusStats, statusHasStats
+	connected, connKnown := statusConnected, statusConnKnown
+	statusMu.RUnlock()
+	return Status{
+		Detected:   detected,
+		Connected:  connected,
+		ConnKnown:  connKnown,
+		Recovering: isRecovering(),
+		Quality:    stats.Quality,
+		Tech:       stats.Tech,
+		HasStats:   hasStats,
+	}
 }
 
 // BitrateAdvisoryFromStats returns the recommended max streaming bitrate (bps)
@@ -557,32 +815,28 @@ func BitrateAdvisoryFromStats(maxBitrate int, s SignalStats) int {
 	return ceiling
 }
 
-// BitrateAdvisory calls GetSignalStats and returns BitrateAdvisoryFromStats.
-// When the modem is unavailable, maxBitrate is returned unchanged.
-func BitrateAdvisory(maxBitrate int) int {
-	stats, err := GetSignalStats()
-	if err != nil {
-		return maxBitrate
-	}
-	return BitrateAdvisoryFromStats(maxBitrate, stats)
-}
-
-// WatchConnectivity calls onChange whenever modem internet connectivity changes.
-// connected=true when signal quality > 0 and a data technology is active.
-// Polls every 2 s. Stops when ctx is cancelled.
-// If no modem ever responds within the first 10 s, assumes no modem is
-// installed on this device and returns without calling onChange (stream
-// valves stay in their default open state). Once a modem has responded at
-// least once, polling never gives up — a later error (e.g. the D-Bus object
-// briefly gone during a USB re-enumeration, handled by attachModem in the
-// background) is treated as a connectivity drop, not a permanent absence.
+// WatchConnectivity calls onChange whenever modem internet connectivity
+// changes. connected=true when signal quality > 0, a data technology is
+// active, and WatchHealth isn't mid-recovery from a stuck data bearer:
+// SignalQuality/AccessTechnologies reflect radio registration, not whether
+// the data bearer is actually passing traffic, so a registered-but-stuck
+// modem would otherwise never be reported as disconnected here (see
+// isRecovering in watchdog.go).
+// Polls every 2 s (reading the shared signal-stats cache kept fresh by
+// WatchSignalStats, not its own D-Bus call). Stops when ctx is cancelled.
+// Never gives up permanently if the modem hasn't been detected yet (unlike
+// an earlier version of this function) — on the fixed target hardware the
+// modem always shows up eventually, and giving up silently disabled stream
+// pause/resume for the rest of the process if Open() happened to lose the
+// startup race. A later error (e.g. the D-Bus object briefly gone during a
+// USB re-enumeration, handled by attachModem in the background) is treated
+// as a connectivity drop, not a permanent absence.
 func WatchConnectivity(ctx context.Context, onChange func(connected bool)) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	var last *bool
-	noModemCount := 0
-	everConnected := false
+	var warnOnce sync.Once
 
 	for {
 		select {
@@ -591,26 +845,19 @@ func WatchConnectivity(ctx context.Context, onChange func(connected bool)) {
 		case <-ticker.C:
 		}
 
-		stats, err := GetSignalStatsCtx(ctx)
-		if err != nil {
-			noModemCount++
-			if !everConnected && noModemCount >= 5 {
-				// 10 s without any modem response, and none ever seen — assume
-				// no modem is installed on this device.
-				logger.Info("[modem] No modem detected — stream valve control disabled")
-				return
-			}
-			if last == nil || *last {
-				connected := false
-				last = &connected
-				onChange(false)
-			}
+		if !ensureOpen() {
+			warnOnce.Do(func() {
+				logger.Info("[modem] No modem detected yet — stream valve control idle, will keep retrying")
+			})
 			continue
 		}
-		everConnected = true
-		noModemCount = 0
 
-		connected := stats.Quality > 0 && stats.Tech != ""
+		stats, ok := CachedSignalStats()
+		connected := ok && stats.Quality > 0 && stats.Tech != "" && !isRecovering()
+		statusMu.Lock()
+		statusConnected = connected
+		statusConnKnown = true
+		statusMu.Unlock()
 		if last == nil || *last != connected {
 			last = &connected
 			onChange(connected)
@@ -618,89 +865,17 @@ func WatchConnectivity(ctx context.Context, onChange func(connected bool)) {
 	}
 }
 
-// Run reads and displays modem data every second until ctx is cancelled.
-func Run(ctx context.Context) {
-	if err := Open(); err != nil {
-		logger.Fatal("[modem] Initialization failed: %v", err)
-	}
-	defer Close()
-
-	logger.Info("[modem] Reading every second (Ctrl+C to stop)")
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	first := true
-	for {
-		// Check cancellation before any blocking work.
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		if !first {
-			// Move up one line and erase it to overwrite the previous value.
-			fmt.Fprint(os.Stdout, "\033[1A\033[2K")
-		}
-
-		sentences, _ := GetNMEA()
-		pos, hasPos := ParseNMEA(sentences)
-
-		// GetSignalStats makes synchronous D-Bus calls that may block for several
-		// seconds when the modem is busy. Running it in a goroutine lets ctx.Done()
-		// interrupt the wait immediately on Ctrl+C.
-		type statsRes struct {
-			s   SignalStats
-			err error
-		}
-		statsCh := make(chan statsRes, 1)
-		go func() {
-			s, err := GetSignalStatsCtx(ctx)
-			statsCh <- statsRes{s, err}
-		}()
-		var stats SignalStats
-		select {
-		case <-ctx.Done():
-			return
-		case res := <-statsCh:
-			stats = res.s
-		}
-
-		if hasPos && pos.Fix {
-			logger.Info(
-				"[modem] fix   lat=%10.6f lon=%11.6f alt=%6.1fm  sats=%2d hdop=%.1f  spd=%5.1fkt cog=%5.1f°  signal=%3d%% %s",
-				pos.Lat, pos.Lon, pos.Alt,
-				pos.Sats, pos.HDOP,
-				pos.Speed, pos.Course,
-				stats.Quality, stats.Tech,
-			)
-		} else {
-			logger.Info(
-				"[modem] no fix  signal=%3d%% %s",
-				stats.Quality, stats.Tech,
-			)
-		}
-		first = false
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
 // Position holds location data extracted from NMEA frames.
 type Position struct {
-	Lat    float64 // decimal degrees (+ = N)
-	Lon    float64 // decimal degrees (+ = E)
-	Alt    float64 // altitude MSL in metres (GGA)
-	Speed  float64 // speed over ground in knots (RMC)
-	Course float64 // true bearing in degrees (RMC)
-	HDOP   float64 // horizontal dilution of precision (GGA)
-	Sats   int     // number of satellites used (GGA)
-	Fix    bool    // true if fix quality > 0 (GGA)
+	Lat    float64   // decimal degrees (+ = N)
+	Lon    float64   // decimal degrees (+ = E)
+	Alt    float64   // altitude MSL in metres (GGA)
+	Speed  float64   // speed over ground in knots (RMC)
+	Course float64   // true bearing in degrees (RMC)
+	HDOP   float64   // horizontal dilution of precision (GGA)
+	Sats   int       // number of satellites used (GGA)
+	Fix    bool      // true if fix quality > 0 (GGA)
+	Time   time.Time // UTC, from RMC's hhmmss.ss + ddmmyy; zero if unavailable
 }
 
 // ParseNMEA extracts a Position from a set of NMEA sentences.
@@ -727,6 +902,7 @@ func ParseNMEA(sentences []string) (Position, bool) {
 			if p, ok := parseRMC(s); ok {
 				pos.Speed = p.Speed
 				pos.Course = p.Course
+				pos.Time = p.Time
 				hasRMC = true
 			}
 		}
@@ -782,7 +958,7 @@ func parseRMC(s string) (Position, bool) {
 		s = s[:idx]
 	}
 	f := strings.Split(s, ",")
-	if len(f) < 9 {
+	if len(f) < 10 { // index 9 (ddmmyy) is the field furthest out we read
 		return Position{}, false
 	}
 	if f[2] != "A" { // A = active, V = void
@@ -791,8 +967,31 @@ func parseRMC(s string) (Position, bool) {
 
 	speed, _ := strconv.ParseFloat(f[7], 64)
 	course, _ := strconv.ParseFloat(f[8], 64)
+	t, _ := parseNMEATime(f[1], f[9]) // zero time.Time if unparseable — Position.Time then reads as unavailable
 
-	return Position{Speed: speed, Course: course}, true
+	return Position{Speed: speed, Course: course, Time: t}, true
+}
+
+// parseNMEATime combines RMC's hhmmss.ss time field and ddmmyy date field
+// into a UTC time.Time. NMEA's two-digit year has no century: GPS didn't
+// exist before 1980 and this device won't still be recording in 2080, so
+// 2000+yy is unambiguous.
+func parseNMEATime(hhmmss, ddmmyy string) (time.Time, bool) {
+	if len(hhmmss) < 6 || len(ddmmyy) != 6 {
+		return time.Time{}, false
+	}
+	hh, err1 := strconv.Atoi(hhmmss[0:2])
+	mm, err2 := strconv.Atoi(hhmmss[2:4])
+	secFloat, err3 := strconv.ParseFloat(hhmmss[4:], 64)
+	dd, err4 := strconv.Atoi(ddmmyy[0:2])
+	mon, err5 := strconv.Atoi(ddmmyy[2:4])
+	yy, err6 := strconv.Atoi(ddmmyy[4:6])
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil {
+		return time.Time{}, false
+	}
+	sec := int(secFloat)
+	nsec := int((secFloat - float64(sec)) * 1e9)
+	return time.Date(2000+yy, time.Month(mon), dd, hh, mm, sec, nsec, time.UTC), true
 }
 
 // nmeaToDecimal converts NMEA format (DDDMM.MMMM + hemisphere) to decimal degrees.

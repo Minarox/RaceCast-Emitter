@@ -3,6 +3,7 @@ package modem
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func TestValidNMEA(t *testing.T) {
@@ -139,6 +140,48 @@ func TestParseGGA_TooFewFields(t *testing.T) {
 func TestParseRMC_TooFewFields(t *testing.T) {
 	if _, ok := parseRMC("$GPRMC,1,A,2"); ok {
 		t.Error("parseRMC() ok = true for a truncated sentence, want false")
+	}
+}
+
+func TestParseRMC_PopulatesTime(t *testing.T) {
+	// The classic NMEA-spec example sentence (used elsewhere in this file too)
+	// carries a 1994 date; parseNMEATime always resolves a two-digit year into
+	// the 2000s (see its doc comment), so this legacy fixture round-trips to
+	// 2094, not 1994 — that's expected, this sentence is never real GPS output.
+	pos, ok := parseRMC("$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A")
+	if !ok {
+		t.Fatal("parseRMC() ok = false, want true")
+	}
+	want := time.Date(2094, 3, 23, 12, 35, 19, 0, time.UTC)
+	if !pos.Time.Equal(want) {
+		t.Errorf("pos.Time = %v, want %v", pos.Time, want)
+	}
+}
+
+func TestParseNMEATime(t *testing.T) {
+	tests := []struct {
+		name          string
+		hhmmss, ddmmy string
+		wantOK        bool
+		want          time.Time
+	}{
+		{"whole seconds", "123519", "230324", true, time.Date(2024, 3, 23, 12, 35, 19, 0, time.UTC)},
+		{"fractional seconds", "123519.50", "230324", true, time.Date(2024, 3, 23, 12, 35, 19, 500_000_000, time.UTC)},
+		{"two-digit year rolls into 2000s", "000000", "010125", true, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{"time field too short", "1235", "230324", false, time.Time{}},
+		{"date field wrong length", "123519", "23032", false, time.Time{}},
+		{"non-numeric time", "1a3519", "230324", false, time.Time{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseNMEATime(tt.hhmmss, tt.ddmmy)
+			if ok != tt.wantOK {
+				t.Fatalf("parseNMEATime(%q,%q) ok = %v, want %v", tt.hhmmss, tt.ddmmy, ok, tt.wantOK)
+			}
+			if ok && !got.Equal(tt.want) {
+				t.Errorf("parseNMEATime(%q,%q) = %v, want %v", tt.hhmmss, tt.ddmmy, got, tt.want)
+			}
+		})
 	}
 }
 
