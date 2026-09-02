@@ -12,7 +12,7 @@ package telemetry
 // #include <stdlib.h>
 //
 // static SRTSOCKET telem_dial(const char *host, int port, const char *streamid,
-//                             int latency, const char *passphrase) {
+//                             int latency) {
 //     srt_startup();
 //     SRTSOCKET s = srt_create_socket();
 //     if (s == SRT_INVALID_SOCK) return SRT_INVALID_SOCK;
@@ -35,12 +35,13 @@ package telemetry
 //     int rcvtimeo = 2000;
 //     srt_setsockflag(s, SRTO_RCVTIMEO, &rcvtimeo, sizeof(rcvtimeo));
 //
-//     // Passphrase authentication (AES-256).
-//     if (passphrase && strlen(passphrase) >= 10) {
-//         srt_setsockflag(s, SRTO_PASSPHRASE, passphrase, (int)strlen(passphrase));
-//         int pbkeylen = 32;
-//         srt_setsockflag(s, SRTO_PBKEYLEN, &pbkeylen, sizeof(pbkeylen));
-//     }
+//     // SRTO_SNDTIMEO: without this, a degraded-but-not-yet-broken connection
+//     // (SRT hasn't hit its own peer-idle timeout yet) leaves sendmsg blocking
+//     // synchronously for however long that takes — while c.mu is held, which
+//     // stalls the other telemetry source (modem/ups share this one Conn).
+//     // Bounding it here makes that stall predictable and short instead.
+//     int sndtimeo = 2000;
+//     srt_setsockflag(s, SRTO_SNDTIMEO, &sndtimeo, sizeof(sndtimeo));
 //
 //     struct addrinfo hints, *res = NULL;
 //     memset(&hints, 0, sizeof(hints));
@@ -87,44 +88,52 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"racecast-emitter/internal/logger"
 )
+
+// dialBackoff is the minimum interval between two blocking srt_connect
+// attempts. Without it, a down receiver makes every failed Send() (from
+// either modem.RunStream at 1 Hz or ups.RunStream at 0.5 Hz — both share
+// this one Conn and its mutex) retry the dial immediately, and srt_connect
+// can block for its own multi-second timeout while holding c.mu — stalling
+// the other telemetry source's Send behind it. This caps how often that
+// blocking call is even attempted.
+const dialBackoff = 3 * time.Second
 
 // Conn is the single bidirectional SRT telemetry connection (streamid "telemetry").
 // Outgoing: typed envelopes {"type":"ups",...} / {"type":"modem",...}.
 // Incoming: IDR requests {"type":"idr","camera":"..."} from the receiver.
 type Conn struct {
 	// immutable after creation
-	ctx        context.Context
-	streamID   string
-	host       string
-	port       int
-	latency    int
-	passphrase string
-	onRecv     func([]byte) // called for each incoming message; nil = no receive
+	ctx      context.Context
+	streamID string
+	host     string
+	port     int
+	latency  int
+	onRecv   func([]byte) // called for each incoming message; nil = no receive
 
 	// mutable, protected by mu
-	mu          sync.Mutex
-	sock        C.SRTSOCKET
-	dialed      bool
-	recvStarted bool
+	mu              sync.Mutex
+	sock            C.SRTSOCKET
+	dialed          bool
+	recvStarted     bool
+	lastDialAttempt time.Time // zero until the first attempt; see dialBackoff
 }
 
 // NewConn creates a Conn for streamID, reading RC_SRT_HOST/PORT/LATENCY.
 // onRecv is called per incoming message (nil = no receive). No-op if RC_SRT_HOST unset.
 func NewConn(ctx context.Context, streamID string, onRecv func([]byte)) *Conn {
 	return &Conn{
-		ctx:        ctx,
-		streamID:   streamID,
-		host:       os.Getenv("RC_SRT_HOST"),
-		port:       envInt("RC_SRT_PORT", 9000),
-		latency:    envInt("RC_SRT_LATENCY", 800),
-		passphrase: strings.TrimSpace(os.Getenv("RC_SRT_PASSPHRASE")),
-		onRecv:     onRecv,
+		ctx:      ctx,
+		streamID: streamID,
+		host:     os.Getenv("RC_SRT_HOST"),
+		port:     envInt("RC_SRT_PORT", 9000),
+		latency:  envInt("RC_SRT_LATENCY", 800),
+		onRecv:   onRecv,
 	}
 }
 
@@ -161,6 +170,20 @@ func (c *Conn) SendStreamClose(name string) error {
 	return c.Send(data)
 }
 
+// IsConnected reports whether the SRT socket is currently dialed. Cheap
+// (mutex-protected bool read, no I/O) — safe to poll from a console dashboard.
+func (c *Conn) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dialed
+}
+
+// Configured reports whether RC_SRT_HOST was set (i.e. this Conn is anything
+// but a permanent no-op).
+func (c *Conn) Configured() bool {
+	return c.host != ""
+}
+
 // Close closes the SRT socket. Must be called at program shutdown.
 func (c *Conn) Close() {
 	c.mu.Lock()
@@ -176,13 +199,18 @@ func (c *Conn) Close() {
 // c.mu must be held.
 func (c *Conn) dialLocked() (C.SRTSOCKET, error) {
 	if !c.dialed {
+		if !c.lastDialAttempt.IsZero() {
+			if since := time.Since(c.lastDialAttempt); since < dialBackoff {
+				return 0, fmt.Errorf("SRT dial backoff: retrying in %s", (dialBackoff - since).Round(time.Millisecond))
+			}
+		}
+		c.lastDialAttempt = time.Now()
+
 		cHost := C.CString(c.host)
 		cSID := C.CString(c.streamID)
-		cPass := C.CString(c.passphrase)
-		sock := C.telem_dial(cHost, C.int(c.port), cSID, C.int(c.latency), cPass)
+		sock := C.telem_dial(cHost, C.int(c.port), cSID, C.int(c.latency))
 		C.free(unsafe.Pointer(cHost))
 		C.free(unsafe.Pointer(cSID))
-		C.free(unsafe.Pointer(cPass))
 		if C.telem_invalid(sock) != 0 {
 			return 0, fmt.Errorf("SRT connection failed to %s:%d (streamid=%s)",
 				c.host, c.port, c.streamID)
@@ -251,4 +279,3 @@ func envInt(key string, def int) int {
 	}
 	return def
 }
-

@@ -1,13 +1,10 @@
 package ups
 
 import (
-	"context"
-	"fmt"
 	"math"
 	"os"
 	"strconv"
 	"sync"
-	"time"
 
 	i2c "github.com/d2r2/go-i2c"
 	golog "github.com/d2r2/go-logger"
@@ -115,19 +112,23 @@ func Close() {
 	}
 }
 
-func read(reg byte) uint16 {
+// read returns the raw register value and whether the read succeeded. A
+// failed read (I2C bus glitch — plausible in a vibrating vehicle) must never
+// be silently reported as a valid 0 reading: the caller uses ok to decide
+// whether to trust the resulting Data.
+func read(reg byte) (uint16, bool) {
 	mu.Lock()
 	defer mu.Unlock()
 
 	if device == nil {
-		return 0
+		return 0, false
 	}
 	val, err := device.ReadRegU16BE(reg)
 	if err != nil {
 		logger.Error("[ups] Read register 0x%02X: %v", reg, err)
-		return 0
+		return 0, false
 	}
-	return val
+	return val, true
 }
 
 func write(reg byte, value uint16) {
@@ -168,11 +169,20 @@ type Data struct {
 	Percentage float64 // 0–100 %
 }
 
-// Read returns the current UPS measurements.
-func Read() Data {
-	v := float64(read(regVoltage)>>3) * 0.004
-	a := float64(int16(read(regCurrent))) * currentLSB / 1000
-	w := float64(int16(read(regPower))) * powerLSB
+// Read returns the current UPS measurements. ok is false if any register
+// read failed — callers must not treat the zero-valued Data as a real
+// reading in that case (e.g. it must not be reported as "battery empty").
+func Read() (Data, bool) {
+	vRaw, ok1 := read(regVoltage)
+	aRaw, ok2 := read(regCurrent)
+	wRaw, ok3 := read(regPower)
+	if !ok1 || !ok2 || !ok3 {
+		return Data{}, false
+	}
+
+	v := float64(vRaw>>3) * 0.004
+	a := float64(int16(aRaw)) * currentLSB / 1000
+	w := float64(int16(wRaw)) * powerLSB
 
 	p := (v - batteryMin) / (batteryMax - batteryMin) * 100
 	p = math.Max(0, math.Min(p, 100))
@@ -182,44 +192,5 @@ func Read() Data {
 		Current:    round2(a),
 		Power:      round2(w),
 		Percentage: round2(p),
-	}
-}
-
-// Run reads and logs UPS values at the given interval until ctx is cancelled.
-func Run(ctx context.Context, interval time.Duration) {
-	if err := Open(); err != nil {
-		logger.Fatal("[ups] Failed to open I2C connection: %v", err)
-	}
-	defer Close()
-
-	logger.Info("[ups] Reading every %s (Ctrl+C to stop)", interval)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	first := true
-	for {
-		// Check cancellation before the I2C read so the loop exits immediately
-		// even if the ticker fires at the same instant as ctx.Done().
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		if !first {
-			// Move up one line and erase it to overwrite the previous value.
-			fmt.Fprint(os.Stdout, "\033[1A\033[2K")
-		}
-		d := Read()
-		logger.Info("[ups] %.2f V  %.2f A  %.2f W  %.1f %%",
-			d.Voltage, d.Current, d.Power, d.Percentage)
-		first = false
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
+	}, true
 }
