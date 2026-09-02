@@ -9,6 +9,10 @@ cameras:
     framerate: 30
     vertical_flip: true
     horizontal_flip: true
+    # main: this camera's stream never gets paused for lack of shared
+    # bandwidth and always gets first claim on it (see
+    # internal/pipeline/bandwidth.go) — at most one camera may set this.
+    main: true
     stream:
       width: 960
       height: 540

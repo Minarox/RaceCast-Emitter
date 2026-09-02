@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -42,9 +41,8 @@ func TestInterChannel(t *testing.T) {
 }
 
 func TestSrtCallerURI(t *testing.T) {
-	t.Run("without passphrase, default latency", func(t *testing.T) {
+	t.Run("default latency", func(t *testing.T) {
 		t.Setenv("RC_SRT_HOST", "1.2.3.4")
-		t.Setenv("RC_SRT_PASSPHRASE", "")
 		t.Setenv("RC_SRT_LATENCY", "")
 
 		uri := srtCallerURI(9000, "Route", "camera")
@@ -54,22 +52,8 @@ func TestSrtCallerURI(t *testing.T) {
 		}
 	})
 
-	t.Run("with passphrase appends escaped passphrase and pbkeylen", func(t *testing.T) {
-		t.Setenv("RC_SRT_HOST", "1.2.3.4")
-		t.Setenv("RC_SRT_PASSPHRASE", "a b&c")
-
-		uri := srtCallerURI(9000, "Route", "camera")
-		if !strings.Contains(uri, "passphrase=a+b%26c") {
-			t.Errorf("srtCallerURI() = %q, missing escaped passphrase", uri)
-		}
-		if !strings.HasSuffix(uri, "&pbkeylen=32") {
-			t.Errorf("srtCallerURI() = %q, missing pbkeylen suffix", uri)
-		}
-	})
-
 	t.Run("custom latency from env", func(t *testing.T) {
 		t.Setenv("RC_SRT_HOST", "1.2.3.4")
-		t.Setenv("RC_SRT_PASSPHRASE", "")
 		t.Setenv("RC_SRT_LATENCY", "1200")
 
 		uri := srtCallerURI(9000, "Route", "camera")
@@ -80,7 +64,6 @@ func TestSrtCallerURI(t *testing.T) {
 
 	t.Run("streamid differentiates camera and microphone sources", func(t *testing.T) {
 		t.Setenv("RC_SRT_HOST", "1.2.3.4")
-		t.Setenv("RC_SRT_PASSPHRASE", "")
 
 		camURI := srtCallerURI(9000, "Cockpit", "camera")
 		micURI := srtCallerURI(9000, "Cockpit", "microphone")
@@ -148,7 +131,6 @@ func TestBuildVideoStreamStr_IntraRefreshBranches(t *testing.T) {
 		Stream: &config.StreamConfig{Bitrate: 4_000_000},
 	}
 	t.Setenv("RC_SRT_HOST", "1.2.3.4")
-	t.Setenv("RC_SRT_PASSPHRASE", "")
 
 	t.Run("intra-refresh disabled falls back to idrinterval", func(t *testing.T) {
 		t.Setenv("RC_VIDEO_INTRA_REFRESH", "0")
@@ -185,41 +167,83 @@ func TestBuildVideoStreamStr_IntraRefreshBranches(t *testing.T) {
 	})
 }
 
-func TestBuildAudioRecordStr_MuxesBlackVideoTrack(t *testing.T) {
-	os.Unsetenv("RC_AUDIO_BITRATE")
-	mic := config.Microphone{Name: "Cockpit", SampleRate: 48000, Channels: 1}
-	got := BuildAudioRecordStr(mic, "records/out.mp4")
+func TestBuildVideoRecordStr_StampsTimecodeBeforeNvvidconv(t *testing.T) {
+	cam := config.Camera{Name: "Front", Width: 1920, Height: 1080, Framerate: 30}
+	got := BuildVideoRecordStr(cam, "records/out.mov")
 
-	if !strings.Contains(got, "mp4mux name=mux") {
-		t.Errorf("missing named muxer: %s", got)
+	if !strings.Contains(got, "timecodestamper source=rtc") {
+		t.Fatalf("missing timecodestamper: %s", got)
 	}
-	if !strings.Contains(got, "filesink location=records/out.mp4") {
+	// timecodestamper only accepts raw video/x-raw caps, so it must appear
+	// between intervideosrc and this pipeline's own nvvidconv (which
+	// converts to NVMM) — not after, where the muxer would need it but the
+	// caps would already have moved past what it can process.
+	srcIdx := strings.Index(got, "intervideosrc")
+	tcIdx := strings.Index(got, "timecodestamper")
+	nvvidconvIdx := strings.Index(got, "nvvidconv")
+	if !(srcIdx < tcIdx && tcIdx < nvvidconvIdx) {
+		t.Errorf("expected intervideosrc < timecodestamper < nvvidconv, got indices %d, %d, %d: %s",
+			srcIdx, tcIdx, nvvidconvIdx, got)
+	}
+	// Verified empirically (see build.go's comment): mp4mux silently drops
+	// the timecode track qtmux writes from the same metadata — regressing
+	// this to mp4mux would compile and run fine while quietly breaking
+	// Resolve sync, so pin the muxer explicitly rather than only asserting
+	// that *a* muxer is present.
+	if !strings.Contains(got, "qtmux") {
+		t.Errorf("expected qtmux (not mp4mux, which drops the tmcd track): %s", got)
+	}
+	if strings.Contains(got, "mp4mux") {
+		t.Errorf("mp4mux is known to silently drop the timecode track, must not be used: %s", got)
+	}
+}
+
+func TestBuildVideoSourceStr_DoesNotStampTimecode(t *testing.T) {
+	// Timecoding now happens only in BuildVideoRecordStr (the sole consumer
+	// that needs it) — the shared source pipeline stamping it too would just
+	// add uncertain hops (this pipeline's own conversion, the tee, the
+	// inter-element handoff) for no benefit. See BuildVideoRecordStr.
+	cam := config.Camera{Name: "Front", Width: 1920, Height: 1080, Framerate: 30}
+	for _, format := range []string{"", "YUY2"} {
+		cam.Format = format
+		got := BuildVideoSourceStr(cam, "/dev/video0")
+		if strings.Contains(got, "timecodestamper") {
+			t.Errorf("format %q: unexpected timecodestamper in source pipeline: %s", format, got)
+		}
+	}
+}
+
+func TestBuildAudioRecordStr_WritesPlainWAV(t *testing.T) {
+	mic := config.Microphone{Name: "Cockpit", SampleRate: 48000, Channels: 1}
+	got := BuildAudioRecordStr(mic, "records/out.wav")
+
+	if !strings.Contains(got, "wavenc") {
+		t.Errorf("missing wavenc: %s", got)
+	}
+	if !strings.Contains(got, "filesink location=records/out.wav") {
 		t.Errorf("missing output path: %s", got)
 	}
-	if !strings.Contains(got, "videotestsrc pattern=black") {
-		t.Errorf("missing synthetic black video track: %s", got)
+	if !strings.Contains(got, "audio/x-raw,format=S16LE,rate=48000,channels=1") {
+		t.Errorf("missing raw PCM caps: %s", got)
 	}
-	if !strings.Contains(got, "framerate=5/1") {
-		t.Errorf("expected low framerate for the placeholder black track: %s", got)
-	}
-	if !strings.Contains(got, "avenc_aac bitrate=192000") {
-		t.Errorf("missing default AAC bitrate: %s", got)
-	}
-	if strings.Count(got, "mux.") != 2 {
-		t.Errorf("expected both the black track and audio to link into mux., got: %s", got)
+	// The black-video-track/AAC/mp4mux workaround this replaced (see bwf.go)
+	// must be gone entirely, not just unused.
+	for _, gone := range []string{"videotestsrc", "avenc_aac", "mp4mux", "timecodestamper"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("unexpected leftover %q from the old black-video-track workaround: %s", gone, got)
+		}
 	}
 }
 
 func TestBuildAudioStreamStr_UsesOpusAndConfiguredBitrate(t *testing.T) {
 	t.Setenv("RC_SRT_HOST", "1.2.3.4")
-	t.Setenv("RC_SRT_PASSPHRASE", "")
 	mic := config.Microphone{
 		Name: "Cockpit", SampleRate: 48000, Channels: 1,
 		Stream: &config.StreamConfig{Bitrate: 96_000},
 	}
 	got := BuildAudioStreamStr(mic, 9000)
-	if !strings.Contains(got, "opusenc bitrate=96000") {
-		t.Errorf("missing configured Opus bitrate: %s", got)
+	if !strings.Contains(got, "opusenc name=aenc bitrate=96000") {
+		t.Errorf("missing named encoder with configured Opus bitrate: %s", got)
 	}
 	if !strings.Contains(got, "streamid=Cockpit:microphone") {
 		t.Errorf("missing microphone streamid: %s", got)
@@ -228,7 +252,6 @@ func TestBuildAudioStreamStr_UsesOpusAndConfiguredBitrate(t *testing.T) {
 
 func TestBuildAudioStreamStr_DownmixesToMonoWhenConfigured(t *testing.T) {
 	t.Setenv("RC_SRT_HOST", "1.2.3.4")
-	t.Setenv("RC_SRT_PASSPHRASE", "")
 	mic := config.Microphone{
 		Name: "Habitacle", SampleRate: 48000, Channels: 2,
 		Stream: &config.StreamConfig{Bitrate: 24_000, Channels: 1},
@@ -239,7 +262,7 @@ func TestBuildAudioStreamStr_DownmixesToMonoWhenConfigured(t *testing.T) {
 	}
 
 	// Recording must be unaffected: still full capture channel count, no downmix.
-	rec := BuildAudioRecordStr(mic, "records/out.mp4")
+	rec := BuildAudioRecordStr(mic, "records/out.wav")
 	if strings.Contains(rec, "channels=1") {
 		t.Errorf("recording path should keep full stereo capture, got: %s", rec)
 	}
@@ -247,7 +270,6 @@ func TestBuildAudioStreamStr_DownmixesToMonoWhenConfigured(t *testing.T) {
 
 func TestBuildAudioStreamStr_NoDownmixWhenChannelsMatch(t *testing.T) {
 	t.Setenv("RC_SRT_HOST", "1.2.3.4")
-	t.Setenv("RC_SRT_PASSPHRASE", "")
 	mic := config.Microphone{
 		Name: "Cockpit", SampleRate: 48000, Channels: 1,
 		Stream: &config.StreamConfig{Bitrate: 96_000},

@@ -5,6 +5,8 @@ package pipeline
 // #include <stdlib.h>
 // #include <fcntl.h>
 // #include <unistd.h>
+// #include <time.h>
+// #include <stdint.h>
 //
 // static int start_pipeline_inner(GstElement *pipeline, char **errmsg) {
 //     *errmsg = NULL;
@@ -99,17 +101,100 @@ package pipeline
 //     gst_object_unref(enc);
 // }
 //
+// // set_resolution changes a named capsfilter's caps to a new width/height
+// // (keeping framerate and NVMM/NV12 format) and pushes a reconfigure event
+// // upstream on its sink pad. On the Jetson hardware AV1 encoder
+// // (nvv4l2av1enc) placed downstream, this triggers the encoder's own DRC
+// // (Dynamic Resolution Change) support: confirmed on real hardware to
+// // renegotiate and keep encoding — with a new IDR/sequence header — without
+// // an error, a dropped frame, or touching srtsink/the SRT connection at all.
+// // See CLAUDE.md for the end-to-end measurement.
+// static void set_resolution(GstElement *pipeline, const char *capsfilterName, gint width, gint height, gint framerate) {
+//     GstElement *cf = gst_bin_get_by_name(GST_BIN(pipeline), capsfilterName);
+//     if (!cf) return;
+//     gchar *capsStr = g_strdup_printf(
+//         "video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12",
+//         width, height, framerate);
+//     GstCaps *caps = gst_caps_from_string(capsStr);
+//     g_free(capsStr);
+//     g_object_set(cf, "caps", caps, NULL);
+//     gst_caps_unref(caps);
+//     GstPad *sinkpad = gst_element_get_static_pad(cf, "sink");
+//     if (sinkpad) {
+//         gst_pad_push_event(sinkpad, gst_event_new_reconfigure());
+//         gst_object_unref(sinkpad);
+//     }
+//     gst_object_unref(cf);
+// }
+//
 // // force_idr requests an immediate IDR frame from a named encoder element.
 // // On Jetson nvv4l2* encoders, "force-IDR" is a signal, not a property:
 // //   g_signal_emit_by_name (element, "force-IDR");
 // // Using g_object_set for a signal name produces a GLib-CRITICAL and does
-// // nothing. This function uses g_signal_emit_by_name unconditionally; if the
-// // element has no such signal the call is silently ignored by GLib.
+// // nothing. g_signal_lookup checks the element's type actually has a
+// // "force-IDR" signal before emitting — needed since WatchLocalStats' ABR
+// // loop now runs for audio (Opus) pipelines too, and calls this on every SRT
+// // (re)connect regardless of encoder type; opusenc has no such signal, and
+// // emitting a signal name a type doesn't declare is a GLib-CRITICAL, not a
+// // silent no-op, unlike gst_bin_get_by_name returning NULL for a missing
+// // element name.
 // static void force_idr(GstElement *pipeline, const char *name) {
 //     GstElement *enc = gst_bin_get_by_name(GST_BIN(pipeline), name);
 //     if (!enc) return;
-//     g_signal_emit_by_name(enc, "force-IDR", NULL);
+//     if (g_signal_lookup("force-IDR", G_OBJECT_TYPE(enc)) != 0) {
+//         g_signal_emit_by_name(enc, "force-IDR", NULL);
+//     }
 //     gst_object_unref(enc);
+// }
+//
+// // prefix_timestamp_probe prepends an 8-byte big-endian UTC nanosecond
+// // (CLOCK_REALTIME) capture timestamp to every buffer flowing through the
+// // pad it's attached to — see attach_timestamp_probe below. RaceCast-Receiver
+// // must strip these 8 bytes back off before feeding the rest to its decoder;
+// // both sides have to be deployed together, since a mismatched pair either
+// // corrupts every decoded frame (old receiver, new emitter) or silently eats
+// // 8 bytes of real bitstream data (new receiver, old emitter).
+// //
+// // gst_buffer_make_writable() may return a different (copied) GstBuffer than
+// // the one passed in — always use its return value, never the original
+// // pointer, afterward. gst_buffer_insert_memory() takes ownership of the
+// // GstMemory it's given.
+// static GstPadProbeReturn prefix_timestamp_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+//     GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+//     if (!buf) return GST_PAD_PROBE_OK;
+//
+//     struct timespec ts;
+//     clock_gettime(CLOCK_REALTIME, &ts);
+//     uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+//
+//     GstMemory *hdr = gst_allocator_alloc(NULL, 8, NULL);
+//     GstMapInfo m;
+//     gst_memory_map(hdr, &m, GST_MAP_WRITE);
+//     for (int i = 0; i < 8; i++) {
+//         m.data[i] = (unsigned char)(ns >> ((7 - i) * 8));
+//     }
+//     gst_memory_unmap(hdr, &m);
+//
+//     buf = gst_buffer_make_writable(buf);
+//     gst_buffer_insert_memory(buf, 0, hdr);
+//     GST_PAD_PROBE_INFO_DATA(info) = buf;
+//     return GST_PAD_PROBE_OK;
+// }
+//
+// // attach_timestamp_probe attaches prefix_timestamp_probe to the sink pad of
+// // the named element (srtsink, for stream pipelines) so every buffer is
+// // stamped right before it's handed to libsrt — as close to the actual send
+// // as this pipeline gets, after every encode/convert step has already run.
+// // No-op if the named element doesn't exist.
+// static void attach_timestamp_probe(GstElement *pipeline, const char *name) {
+//     GstElement *el = gst_bin_get_by_name(GST_BIN(pipeline), name);
+//     if (!el) return;
+//     GstPad *pad = gst_element_get_static_pad(el, "sink");
+//     if (pad) {
+//         gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, prefix_timestamp_probe, NULL, NULL);
+//         gst_object_unref(pad);
+//     }
+//     gst_object_unref(el);
 // }
 //
 // // try_set_intra_refresh attempts to enable intra-refresh on a named encoder.
@@ -448,7 +533,8 @@ func (p *GstPipeline) watchBus() {
 	}
 }
 
-// SetBitrate dynamically changes the AV1 encoder bitrate (bps).
+// SetBitrate dynamically changes a named encoder's bitrate (bps) — the AV1
+// video encoder or the Opus audio encoder, both expose a "bitrate" property.
 // Safe to call while the pipeline is in PLAYING state.
 func (p *GstPipeline) SetBitrate(encoderName string, bitrate int) {
 	cName := C.CString(encoderName)
@@ -460,7 +546,23 @@ func (p *GstPipeline) SetBitrate(encoderName string, bitrate int) {
 	}
 }
 
-// ForceIDR requests an immediate IDR frame from the named encoder.
+// SetResolution changes a named capsfilter's caps to a new resolution while
+// the pipeline keeps running — see set_resolution's comment for what this
+// relies on downstream. Used by bandwidth.go's resolution-tier switching
+// instead of tearing down and rebuilding the pipeline: the SRT connection
+// and its cumulative stats are never touched.
+func (p *GstPipeline) SetResolution(capsfilterName string, width, height, framerate int) {
+	cName := C.CString(capsfilterName)
+	defer C.free(unsafe.Pointer(cName))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pipeline != nil && p.running {
+		C.set_resolution(p.pipeline, cName, C.gint(width), C.gint(height), C.gint(framerate))
+	}
+}
+
+// ForceIDR requests an immediate IDR frame from the named encoder. Safe to
+// call on an encoder with no "force-IDR" signal (e.g. opusenc) — a no-op.
 func (p *GstPipeline) ForceIDR(encoderName string) {
 	cName := C.CString(encoderName)
 	defer C.free(unsafe.Pointer(cName))
@@ -468,6 +570,24 @@ func (p *GstPipeline) ForceIDR(encoderName string) {
 	defer p.mu.Unlock()
 	if p.pipeline != nil && p.running {
 		C.force_idr(p.pipeline, cName)
+	}
+}
+
+// AttachTimestampPrefix arranges for every buffer flowing into the named
+// sink element (srtsink, for stream pipelines) to be prefixed with an 8-byte
+// big-endian UTC nanosecond capture timestamp — see prefix_timestamp_probe's
+// comment in the cgo preamble for the wire format and the requirement that
+// RaceCast-Receiver be updated to match. Must be called before Start() (i.e.
+// while the pipeline is still in NULL/READY state): the intent is that every
+// buffer gets stamped, not just ones lucky enough to arrive after this call
+// — unlike the other named-element setters here, this has no *running guard.
+func (p *GstPipeline) AttachTimestampPrefix(sinkName string) {
+	cName := C.CString(sinkName)
+	defer C.free(unsafe.Pointer(cName))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pipeline != nil {
+		C.attach_timestamp_probe(p.pipeline, cName)
 	}
 }
 

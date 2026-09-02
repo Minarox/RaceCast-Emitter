@@ -22,13 +22,12 @@ func envInt(key string, defaultVal int) int {
 		if v, err := strconv.Atoi(s); err == nil && v >= 0 {
 			return v
 		}
-		logger.Warn("Invalid environment variable %s, using default: %d", key, defaultVal)
+		logger.Warn("[config] Invalid environment variable %s, using default: %d", key, defaultVal)
 	}
 	return defaultVal
 }
 
 func videoBitrate() int { return envInt("RC_VIDEO_BITRATE", 12_000_000) }
-func audioBitrate() int { return envInt("RC_AUDIO_BITRATE", 192_000) }
 
 // intraRefreshPeriod returns the intra-refresh period in frames (0 = disabled).
 func intraRefreshPeriod() int { return envInt("RC_VIDEO_INTRA_REFRESH", 0) }
@@ -38,7 +37,7 @@ func srtPortStart() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RC_SRT_PORT"))); err == nil && n > 0 {
 		return n
 	}
-	logger.Warn("RC_SRT_PORT not set or invalid — defaulting to 9000")
+	logger.Warn("[srt] RC_SRT_PORT not set or invalid — defaulting to 9000")
 	return 9000
 }
 
@@ -86,7 +85,12 @@ func (s *Slot) IsStreamRunning() bool {
 // wg entry, and spawns a goroutine that calls wg.Done() once the pipeline stops.
 // If the control context was cancelled during startup, the pipeline is discarded.
 // A second call with the same field while one is already active is a no-op.
-func (s *Slot) activatePipeline(label string, gp *GstPipeline, field **GstPipeline, wg *sync.WaitGroup) {
+// onStopped, if non-nil, runs after SetNull() completes — i.e. once the
+// pipeline's output file is guaranteed closed (filesink closes its fd during
+// the PAUSED→READY transition SetNull triggers) — for post-processing that
+// needs the finished file, such as bwf.go's bext injection on a completed
+// audio recording. Most callers pass nil.
+func (s *Slot) activatePipeline(label string, gp *GstPipeline, field **GstPipeline, wg *sync.WaitGroup, onStopped func()) {
 	select {
 	case <-gp.controlCtx.Done():
 		logger.Info("[%s] Context cancelled during startup — pipeline discarded", label)
@@ -104,17 +108,28 @@ func (s *Slot) activatePipeline(label string, gp *GstPipeline, field **GstPipeli
 	*field = gp
 	s.mu.Unlock()
 	logger.Info("[%s] GStreamer pipeline started", label)
+	trackPipelineLifecycle(label, gp, field, s, wg, onStopped)
+}
+
+// trackPipelineLifecycle spawns a goroutine that waits for gp to stop, then
+// clears *field and cleans up. onStopped, if non-nil, runs after SetNull()
+// completes — see activatePipeline's doc comment for why.
+func trackPipelineLifecycle(label string, gp *GstPipeline, field **GstPipeline, s *Slot, wg *sync.WaitGroup, onStopped func()) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		gp.wg.Wait()
 		logger.Info("[%s] GStreamer pipeline stopped", label)
 		s.mu.Lock()
-		if *field == gp {
-			*field = nil
-		}
+		*field = nil
 		s.mu.Unlock()
-		go func() { gp.SetNull(); gp.Free() }()
+		go func() {
+			gp.SetNull()
+			gp.Free()
+			if onStopped != nil {
+				onStopped()
+			}
+		}()
 	}()
 }
 
@@ -188,6 +203,11 @@ type PollOptions struct {
 	// NotifyClose is called when a source pipeline errors (device disconnect).
 	// The argument is the camera or microphone name. Optional.
 	NotifyClose func(name string)
+	// Bandwidth is where camera stream entries register for shared video
+	// bitrate allocation instead of running feedback.go's old independent
+	// per-stream ABR ceiling — see bandwidth.go. Required whenever Stream is
+	// true and any camera has streaming enabled; audio is unaffected.
+	Bandwidth *BandwidthCoordinator
 }
 
 // Poll scans all configured sources and starts any pipeline that is not yet
@@ -207,15 +227,27 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 	srtPort := srtPortStart()
 
 	type entry struct {
-		label      string
-		str        string
-		slot       *Slot
-		field      **GstPipeline
-		isStream   bool
-		maxBitrate int
+		label       string
+		str         string
+		slot        *Slot
+		field       **GstPipeline
+		isStream    bool // run the ABR post-start block (WatchLocalStats), video or audio
+		videoOnly   bool // also try intra-refresh, meaningless for the Opus audio encoder
+		encoderName string
+		maxBitrate  int
 		// streamName is set on source entries so the onError callback can notify
 		// the receiver that the stream was closed intentionally.
 		streamName string
+		// onStopped, if set, runs once this pipeline has fully stopped and its
+		// output file is closed — see activatePipeline.
+		onStopped func()
+		// cameraName, isMain and streamWidth/Height/Framerate are set on
+		// camera stream entries (videoOnly) only, for
+		// BandwidthCoordinator.Register — streamWidth/Height/Framerate let
+		// changeTier compute a reduced resolution to switch to live.
+		cameraName                                 string
+		isMain                                     bool
+		streamWidth, streamHeight, streamFramerate int
 	}
 
 	// startEntries creates GStreamer pipelines for all entries in the slice and
@@ -242,6 +274,15 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			if err != nil {
 				logger.Error("[%s] Failed to create pipeline: %v", e.label, err)
 				continue
+			}
+			if e.isStream {
+				// Must happen before StartEach below transitions this pipeline
+				// to PLAYING, so every buffer — not just ones lucky enough to
+				// arrive after the probe is attached — carries the capture
+				// timestamp RaceCast-Receiver now expects on every SRT media
+				// message. Record pipelines have no srtsink, so this is a
+				// harmless no-op for them (isStream is false there).
+				gp.AttachTimestampPrefix("srtsink")
 			}
 			field := e.field
 			streamName := e.streamName
@@ -275,20 +316,43 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 				go pe.gp.Free()
 				return
 			}
-			pe.slot.activatePipeline(pe.label, pe.gp, pe.field, wg)
+			pe.slot.activatePipeline(pe.label, pe.gp, pe.field, wg, pe.onStopped)
 			if !pe.isStream {
 				return
 			}
-			// Stream pipeline post-start: intra-refresh + local ABR.
-			if period := intraRefreshPeriod(); period > 0 {
-				if pe.gp.TrySetIntraRefresh("avenc", period) {
-					logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
-				} else {
-					logger.Warn("[%s] Intra-refresh requested but encoder element not found", pe.label)
-				}
-			}
+			// Stream pipeline post-start: intra-refresh (video only), then ABR.
 			minBR := pe.maxBitrate / 5
-			pe.gp.WatchLocalStats("avenc", "srtsink", minBR, pe.maxBitrate)
+			if pe.videoOnly {
+				if period := intraRefreshPeriod(); period > 0 {
+					if pe.gp.TrySetIntraRefresh(pe.encoderName, period) {
+						logger.Info("[%s] Intra-refresh enabled (period=%d frames)", pe.label, period)
+					} else {
+						logger.Warn("[%s] Intra-refresh requested but encoder element not found", pe.label)
+					}
+				}
+				// Video shares one bandwidth budget across all cameras (bandwidth.go)
+				// instead of running its own independent ABR ceiling — see its
+				// package comment for why. Audio (below) is unaffected.
+				if opts.Bandwidth != nil {
+					opts.Bandwidth.Register(RegisterOptions{
+						Name:        pe.cameraName,
+						IsMain:      pe.isMain,
+						Slot:        pe.slot,
+						Pipeline:    pe.gp,
+						EncoderName: pe.encoderName,
+						MinBitrate:  minBR,
+						MaxBitrate:  pe.maxBitrate,
+						Width:       pe.streamWidth,
+						Height:      pe.streamHeight,
+						Framerate:   pe.streamFramerate,
+						OnStopped:   pe.onStopped,
+					})
+				} else {
+					logger.Warn("[%s] No BandwidthCoordinator configured — video stream has no ABR", pe.label)
+				}
+				return
+			}
+			pe.gp.WatchLocalStats(pe.encoderName, "srtsink", minBR, pe.maxBitrate)
 		})
 	}
 
@@ -400,12 +464,15 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 
 		if opts.Record && !s.IsRecordRunning() {
 			now := time.Now()
-			dir := filepath.Join(recordsDir, now.Format("2006-01-02"))
+			dir := filepath.Join(recordsDir, now.Format("2006-01-02"), "video")
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				logger.Error("[%s] Failed to create directory: %v", label, err)
 				continue
 			}
-			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_video.mp4",
+			// .mov, not .mp4: BuildVideoRecordStr muxes with qtmux (needed for
+			// the embedded SMPTE timecode track — see its comment) which
+			// produces a QuickTime file, not a strict-profile MP4.
+			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_video.mov",
 				now.Format("15-04-05"), sanitize(cam.Name)))
 			consEntries = append(consEntries, entry{
 				label: label + ":record",
@@ -416,13 +483,28 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 
 		if doStream && !s.IsStreamRunning() {
+			camName := cam.Name
+			streamLabel := label + ":stream"
+
 			consEntries = append(consEntries, entry{
-				label:      label + ":stream",
-				str:        BuildVideoStreamStr(cam, srtPort),
-				slot:       s,
-				field:      &s.stream,
-				isStream:   true,
-				maxBitrate: cam.StreamBitrate(),
+				label:           streamLabel,
+				str:             BuildVideoStreamStr(cam, srtPort),
+				slot:            s,
+				field:           &s.stream,
+				isStream:        true,
+				videoOnly:       true,
+				encoderName:     "avenc",
+				maxBitrate:      cam.StreamBitrate(),
+				cameraName:      camName,
+				isMain:          cam.Main,
+				streamWidth:     cam.StreamWidth(),
+				streamHeight:    cam.StreamHeight(),
+				streamFramerate: cam.StreamFramerate(),
+				onStopped: func() {
+					if opts.Bandwidth != nil {
+						opts.Bandwidth.Unregister(camName)
+					}
+				},
 			})
 		}
 	}
@@ -444,30 +526,43 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 
 		if opts.Record && !s.IsRecordRunning() {
 			now := time.Now()
-			dir := filepath.Join(recordsDir, now.Format("2006-01-02"))
+			dir := filepath.Join(recordsDir, now.Format("2006-01-02"), "audio")
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				logger.Error("[%s] Failed to create directory: %v", label, err)
 				continue
 			}
-			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_audio.mp4",
+			// .wav, not .mp4: BuildAudioRecordStr now writes plain PCM via
+			// wavenc — see its comment — with a BWF "bext" timecode chunk
+			// patched in by injectBWFTimeReference once recording stops,
+			// rather than muxing AAC with a synthetic black video track.
+			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_audio.wav",
 				now.Format("15-04-05"), sanitize(mic.Name)))
+			startedAt := now
 			consEntries = append(consEntries, entry{
 				label: label + ":record",
 				str:   BuildAudioRecordStr(mic, outputPath),
 				slot:  s,
 				field: &s.record,
+				onStopped: func() {
+					if err := injectBWFTimeReference(outputPath, startedAt, mic.SampleRate); err != nil {
+						logger.Error("[%s] BWF timecode injection failed: %v", label, err)
+					}
+				},
 			})
 		}
 
 		if doStream && !s.IsStreamRunning() {
-			// isStream is intentionally left false: the post-start block
-			// (intra-refresh + WatchLocalStats ABR) targets the "avenc" AV1
-			// video encoder and is meaningless for an audio (Opus) pipeline.
+			// videoOnly left false: intra-refresh is a hardware H.264/AV1
+			// encoder feature, meaningless for the software Opus encoder.
+			// isStream is true — WatchLocalStats' ABR loop applies here too.
 			consEntries = append(consEntries, entry{
-				label: label + ":stream",
-				str:   BuildAudioStreamStr(mic, srtPort),
-				slot:  s,
-				field: &s.stream,
+				label:       label + ":stream",
+				str:         BuildAudioStreamStr(mic, srtPort),
+				slot:        s,
+				field:       &s.stream,
+				isStream:    true,
+				encoderName: "aenc",
+				maxBitrate:  mic.StreamBitrate(),
 			})
 		}
 	}

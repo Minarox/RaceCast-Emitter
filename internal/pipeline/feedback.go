@@ -1,11 +1,12 @@
 package pipeline
 
-// feedback.go manages local ABR for streaming cameras.
+// feedback.go manages local ABR for streaming cameras and microphones.
 // WatchLocalStats polls srtsink's "stats" GstStructure directly (RTT, bandwidth,
 // packet-loss are known locally via SRT ACK/NAK — no server round-trip needed).
 // IDR requests arrive via the shared bidirectional telemetry connection.
 
 import (
+	"fmt"
 	"time"
 
 	"racecast-emitter/internal/logger"
@@ -34,7 +35,10 @@ type localStats struct {
 // ── Local ABR (no network round-trip) ────────────────────────────────────────
 
 // WatchLocalStats starts an ABR goroutine reading SRT stats from sinkName every
-// fbLocalInterval and adapting the AV1 encoder bitrate (no server round-trip).
+// fbLocalInterval and adapting encoderName's bitrate (no server round-trip).
+// Works for both the AV1 video encoder ("avenc") and the Opus audio encoder
+// ("aenc") — the stats/bitrate/IDR mechanisms it drives are all generic
+// GStreamer element property/signal access, not video-specific.
 func (p *GstPipeline) WatchLocalStats(encoderName, sinkName string, minBitrate, maxBitrate int) {
 	go p.localStatsLoop(encoderName, sinkName, minBitrate, maxBitrate)
 }
@@ -83,19 +87,25 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 
 		// Modem ceiling: pre-emptive upper bound based on radio tech/quality,
 		// before SRT stats degrade. Equals maxBitrate when modem is unavailable.
+		// Reads the shared cache kept fresh by modem.WatchSignalStats rather
+		// than polling D-Bus itself — with N streaming cameras, each running
+		// this loop independently, a direct GetSignalStatsCtx call here would
+		// mean N redundant D-Bus round trips every fbLocalInterval.
 		effectiveMax := maxBitrate
-		modemStats, modemErr := modem.GetSignalStatsCtx(p.controlCtx)
-		if modemErr == nil {
+		modemStats, modemOK := modem.CachedSignalStats()
+		if modemOK {
 			effectiveMax = modem.BitrateAdvisoryFromStats(maxBitrate, modemStats)
 			if effectiveMax != prevEffectiveMax {
-				logger.Info("[abr:%s] Modem ceiling: %d bps (tech=%q signal=%d%%)",
-					encoderName, effectiveMax, modemStats.Tech, modemStats.Quality)
+				logger.InfoFields("abr:"+encoderName,
+					fmt.Sprintf("Modem ceiling: %d bps (tech=%q signal=%d%%)", effectiveMax, modemStats.Tech, modemStats.Quality),
+					map[string]any{"ceiling_bps": effectiveMax, "tech": modemStats.Tech, "signal_pct": modemStats.Quality})
 				prevEffectiveMax = effectiveMax
 			}
 			// Enforce ceiling immediately on downgrade (e.g. LTE → UMTS).
 			if currentBitrate > effectiveMax {
-				logger.Info("[abr:%s] Modem ceiling enforced: %d → %d bps",
-					encoderName, currentBitrate, effectiveMax)
+				logger.InfoFields("abr:"+encoderName,
+					fmt.Sprintf("Modem ceiling enforced: %d → %d bps", currentBitrate, effectiveMax),
+					map[string]any{"from_bps": currentBitrate, "to_bps": effectiveMax, "reason": "modem_ceiling"})
 				p.SetBitrate(encoderName, effectiveMax)
 				currentBitrate = effectiveMax
 				stableCount = 0
@@ -105,8 +115,9 @@ func (p *GstPipeline) localStatsLoop(encoderName, sinkName string, minBitrate, m
 		st := localStats{LossPct: lossPct, RTTMS: rttMS, BandwidthMbps: bwMbps}
 		newBitrate := adaptBitrate(currentBitrate, st, minBitrate, effectiveMax, &stableCount)
 		if newBitrate != currentBitrate {
-			logger.Info("[abr:%s] Bitrate %d → %d bps (loss=%.1f%% rtt=%.0fms bw=%.1fMbps)",
-				encoderName, currentBitrate, newBitrate, lossPct, rttMS, bwMbps)
+			logger.InfoFields("abr:"+encoderName,
+				fmt.Sprintf("Bitrate %d → %d bps (loss=%.1f%% rtt=%.0fms bw=%.1fMbps)", currentBitrate, newBitrate, lossPct, rttMS, bwMbps),
+				map[string]any{"from_bps": currentBitrate, "to_bps": newBitrate, "loss_pct": lossPct, "rtt_ms": rttMS, "bw_mbps": bwMbps, "reason": "adaptive"})
 			p.SetBitrate(encoderName, newBitrate)
 			currentBitrate = newBitrate
 		}

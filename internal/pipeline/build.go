@@ -2,12 +2,17 @@ package pipeline
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
 	"racecast-emitter/internal/config"
 )
+
+// resolutionCapsfilterName names the capsfilter BuildVideoStreamStr inserts
+// between nvvidconv and the encoder. bandwidth.go's resolution-tier switching
+// targets it by name via GstPipeline.SetResolution to change the encoder's
+// input resolution live, without touching srtsink or the SRT connection.
+const resolutionCapsfilterName = "rescap"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,12 +37,9 @@ func srtCallerURI(port int, name, source string) string {
 	latency := envInt("RC_SRT_LATENCY", 800)
 	streamID := name + ":" + source
 	// iptos=136 = DSCP AF41: marks packets as video streaming for router QoS.
-	uri := fmt.Sprintf("srt://%s:%d?streamid=%s&latency=%d&mode=caller&iptos=136", host, port, streamID, latency)
-	if p := strings.TrimSpace(os.Getenv("RC_SRT_PASSPHRASE")); p != "" {
-		// pbkeylen=32 → AES-256.
-		uri += "&passphrase=" + url.QueryEscape(p) + "&pbkeylen=32"
-	}
-	return uri
+	// Unencrypted: this SRT traffic runs inside a WireGuard tunnel to the
+	// receiver, so an SRT-layer passphrase would just double-encrypt it.
+	return fmt.Sprintf("srt://%s:%d?streamid=%s&latency=%d&mode=caller&iptos=136", host, port, streamID, latency)
 }
 
 // interChannel returns the inter-element channel names for a source.
@@ -65,28 +67,32 @@ func BuildVideoSourceStr(cam config.Camera, dev string) string {
 		cam.Width, cam.Height, cam.Framerate,
 	)
 
+	// Timecoding is NOT done here. timecodestamper only ever attaches a
+	// GstVideoTimeCodeMeta on a raw-video buffer, and that meta still has to
+	// cross this pipeline's own recompression hops downstream (nvvidconv's
+	// NVMM conversion, the hardware encoder, the parser) before it could
+	// reach any muxer — stamping in the shared source pipeline would add
+	// three more uncertain hops on top of that (this decode/convert step,
+	// the tee, and the inter-element handoff) for no benefit, since nothing
+	// here consumes the timecode itself. See BuildVideoRecordStr, the only
+	// consumer that actually needs it, for where it's stamped instead.
 	var source string
 	switch strings.ToUpper(cam.Format) {
 	case "YUY2", "YUYV":
-		// YUY2 is CPU memory — timecodestamper runs first (metadata only, no
-		// pixel access), then a single nvvidconv does flip + YUY2→I420 via VIC.
 		source = fmt.Sprintf(
 			"v4l2src device=%s do-timestamp=true ! "+
 				"video/x-raw,width=%d,height=%d,framerate=%d/1 ! "+
-				"timecodestamper source=rtc ! "+
 				"nvvidconv flip-method=%d ! %s",
 			dev, cam.Width, cam.Height, cam.Framerate, flip, i420Caps,
 		)
 	default: // MJPEG
-		// Decoder outputs NVMM NV12. A single nvvidconv does flip +
-		// NVMM NV12→CPU I420 in one VIC pass, then timecodestamper adds
-		// timecode metadata to the plain CPU I420 buffer.
+		// Decoder outputs NVMM NV12; nvvidconv does flip + NVMM NV12→CPU I420
+		// in one VIC pass.
 		source = fmt.Sprintf(
 			"v4l2src device=%s do-timestamp=true ! "+
 				"image/jpeg,width=%d,height=%d,framerate=%d/1 ! "+
 				"nvv4l2decoder mjpeg=true enable-max-performance=true ! "+
-				"nvvidconv flip-method=%d ! %s ! "+
-				"timecodestamper source=rtc",
+				"nvvidconv flip-method=%d ! %s",
 			dev, cam.Width, cam.Height, cam.Framerate, flip, i420Caps,
 		)
 	}
@@ -100,7 +106,9 @@ func BuildVideoSourceStr(cam config.Camera, dev string) string {
 }
 
 // BuildVideoRecordStr builds the recording pipeline for a camera.
-// Reads frames from the inter-element record channel and encodes to H.264 fragmented MP4.
+// Reads frames from the inter-element record channel and encodes to H.264 in
+// a fragmented QuickTime (.mov) file, carrying an embedded SMPTE timecode
+// track for DaVinci Resolve auto-sync.
 func BuildVideoRecordStr(cam config.Camera, outputPath string) string {
 	recCh, _ := interChannel("v", cam.Name)
 	// intervideosrc delivers video/x-raw,I420 (plain GLib buffer, no
@@ -111,10 +119,25 @@ func BuildVideoRecordStr(cam config.Camera, outputPath string) string {
 		cam.Width, cam.Height, cam.Framerate,
 	)
 	return fmt.Sprintf(
+		// timecodestamper must run here, in the raw-video domain right after
+		// intervideosrc — it only accepts video/x-raw caps — before this
+		// pipeline's own nvvidconv/NVMM conversion, hardware encoder, and
+		// parser.
+		//
+		// Verified empirically on this hardware (GStreamer 1.24.2, R39):
+		// GstVideoTimeCodeMeta survives nvvidconv → nvv4l2h264enc →
+		// h264parse intact — the muxer reads a valid timecode from the
+		// first buffer it receives either way. The part that actually
+		// mattered, and was wrong until this was tested, is the muxer
+		// itself: qtmux writes a dedicated tmcd timecode track from that
+		// metadata, but mp4mux — despite sharing gst-plugins-good's isomp4
+		// code with qtmux — silently drops it and produces a video-only
+		// file. Do not swap this back to mp4mux without re-verifying.
 		"intervideosrc channel=%q ! %s ! "+
+			"timecodestamper source=rtc ! "+
 			"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "+
 			"nvv4l2h264enc bitrate=%d idrinterval=%d insert-sps-pps=true profile=4 ! "+
-			"h264parse ! mp4mux fragment-duration=500 ! filesink location=%s sync=false",
+			"h264parse ! qtmux fragment-duration=500 ! filesink location=%s sync=false",
 		recCh, rawCaps, videoBitrate(), cam.Framerate/2, outputPath,
 	)
 }
@@ -164,9 +187,9 @@ func BuildVideoStreamStr(cam config.Camera, srtPort int) string {
 	// one temporal unit per srt_recvmsg without re-assembly overhead.
 	return fmt.Sprintf(
 		"intervideosrc channel=%q ! %s ! "+
-			"nvvidconv ! %s ! "+
+			"nvvidconv ! capsfilter name=%s caps=%q ! "+
 			"%s ! srtsink name=srtsink uri=%q sync=false wait-for-connection=false",
-		strCh, srcCaps, dstCaps, enc,
+		strCh, srcCaps, resolutionCapsfilterName, dstCaps, enc,
 		srtCallerURI(srtPort, cam.Name, "camera"),
 	)
 }
@@ -189,37 +212,21 @@ func BuildAudioSourceStr(mic config.Microphone, alsaDev string) string {
 }
 
 // BuildAudioRecordStr builds the recording pipeline for a microphone.
-// Reads from the inter-element record channel and muxes AAC audio with a black H.264
-// video track (SMPTE timecode) into a fragmented MP4.
+// Reads from the inter-element record channel and writes plain PCM to a WAV
+// file via wavenc — uncompressed, since BWF (see bwf.go) is fundamentally a
+// PCM format and Resolve's timecode auto-sync needs sample-accurate data
+// anyway. No black-video-track workaround: injectBWFTimeReference (called
+// once this pipeline has fully stopped — see Poll's onStopped) patches a
+// proper "bext" chunk into the file afterwards, carrying the same kind of
+// start-time reference a professional field recorder would embed natively,
+// which Resolve reads directly without needing a synthetic video track at all.
 func BuildAudioRecordStr(mic config.Microphone, outputPath string) string {
 	recCh, _ := interChannel("a", mic.Name)
 	caps := fmt.Sprintf("audio/x-raw,format=S16LE,rate=%d,channels=%d", mic.SampleRate, mic.Channels)
-
-	const (
-		// blackFPS is deliberately low: this track only exists so ffmpeg-family
-		// tools see a video stream alongside the audio, nobody watches it, so
-		// there's no reason to spend hardware encoder cycles on 25fps of a
-		// static frame.
-		blackFPS     = 5
-		blackBitrate = 100_000
-	)
-
-	blackTrack := fmt.Sprintf(
-		"videotestsrc pattern=black is-live=true ! "+
-			"video/x-raw,width=320,height=240,framerate=%d/1 ! "+
-			"timecodestamper source=rtc ! "+
-			"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "+
-			"nvv4l2h264enc bitrate=%d idrinterval=%d insert-sps-pps=true profile=4 ! "+
-			"h264parse ! mux.",
-		blackFPS, blackBitrate, blackFPS/2,
-	)
-
 	return fmt.Sprintf(
-		"mp4mux name=mux fragment-duration=500 ! filesink location=%s sync=false "+
-			"%s "+
-			"interaudiosrc channel=%q ! %s ! audioconvert ! "+
-			"avenc_aac bitrate=%d ! aacparse ! mux.",
-		outputPath, blackTrack, recCh, caps, audioBitrate(),
+		"interaudiosrc channel=%q ! %s ! audioconvert ! "+
+			"wavenc ! filesink location=%s sync=false",
+		recCh, caps, outputPath,
 	)
 }
 
@@ -228,6 +235,10 @@ func BuildAudioRecordStr(mic config.Microphone, outputPath string) string {
 // If Stream.Channels is set below the capture channel count (e.g. stereo capture, mono
 // stream), an extra audioconvert downmixes just before the encoder — the recording path
 // (BuildAudioRecordStr) is untouched and keeps the full capture channel count.
+// name=aenc: runtime bitrate control via WatchLocalStats, same mechanism as the
+// video path's "avenc" (see feedback.go) — opusenc has no "force-IDR" signal, so
+// the ForceIDR call WatchLocalStats makes on SRT (re)connect is a harmless no-op
+// on this element (force_idr in gst.go checks the signal exists before emitting).
 func BuildAudioStreamStr(mic config.Microphone, srtPort int) string {
 	_, strCh := interChannel("a", mic.Name)
 	caps := fmt.Sprintf("audio/x-raw,format=S16LE,rate=%d,channels=%d", mic.SampleRate, mic.Channels)
@@ -240,7 +251,7 @@ func BuildAudioStreamStr(mic config.Microphone, srtPort int) string {
 	return fmt.Sprintf(
 		"interaudiosrc channel=%q ! %s ! "+
 			downmix+
-			"opusenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
+			"opusenc name=aenc bitrate=%d frame-size=20 perfect-timestamp=true ! "+
 			"srtsink name=srtsink uri=%q sync=false wait-for-connection=false",
 		strCh, caps, mic.StreamBitrate(),
 		srtCallerURI(srtPort, mic.Name, "microphone"),

@@ -73,6 +73,237 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
+func TestLoad_DuplicateCameraName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.yaml")
+	yamlContent := `
+cameras:
+  - uid: cam-uid-1
+    name: Front
+    width: 1920
+    height: 1080
+    framerate: 30
+  - uid: cam-uid-2
+    name: Front
+    width: 1920
+    height: 1080
+    framerate: 30
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for duplicate camera name")
+	}
+}
+
+func TestLoad_DuplicateCameraUID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.yaml")
+	yamlContent := `
+cameras:
+  - uid: cam-uid-1
+    name: Front
+    width: 1920
+    height: 1080
+    framerate: 30
+  - uid: cam-uid-1
+    name: Rear
+    width: 1920
+    height: 1080
+    framerate: 30
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for duplicate camera uid")
+	}
+}
+
+func TestLoad_MultipleMainCamerasRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.yaml")
+	yamlContent := `
+cameras:
+  - uid: cam-uid-1
+    name: Front
+    width: 1920
+    height: 1080
+    framerate: 30
+    main: true
+  - uid: cam-uid-2
+    name: Rear
+    width: 1920
+    height: 1080
+    framerate: 30
+    main: true
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for two cameras marked main")
+	}
+}
+
+func TestLoad_SingleMainCameraAccepted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.yaml")
+	yamlContent := `
+cameras:
+  - uid: cam-uid-1
+    name: Front
+    width: 1920
+    height: 1080
+    framerate: 30
+    main: true
+  - uid: cam-uid-2
+    name: Rear
+    width: 1920
+    height: 1080
+    framerate: 30
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if !cfg.Cameras[0].Main {
+		t.Error("Cameras[0].Main = false, want true")
+	}
+	if cfg.Cameras[1].Main {
+		t.Error("Cameras[1].Main = true, want false")
+	}
+}
+
+func TestLoad_MissingCameraUIDOrName(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"missing uid", "cameras:\n  - name: Front\n    width: 1920\n    height: 1080\n    framerate: 30\n"},
+		{"missing name", "cameras:\n  - uid: cam-uid-1\n    width: 1920\n    height: 1080\n    framerate: 30\n"},
+	} {
+		path := filepath.Join(dir, tc.name+".yaml")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load() error = nil, want error", tc.name)
+		}
+	}
+}
+
+func TestLoad_CameraAndMicrophoneMaySharSameUIDAndName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.yaml")
+	yamlContent := `
+cameras:
+  - uid: shared-uid
+    name: Habitacle
+    width: 1920
+    height: 1080
+    framerate: 30
+microphones:
+  - uid: shared-uid
+    name: Habitacle
+    sample_rate: 48000
+    channels: 2
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("Load() error = %v, want nil (uid/name reuse across cameras/microphones is fine)", err)
+	}
+}
+
+func TestLoad_DuplicateMicrophoneNameOrUID(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"duplicate name", "microphones:\n  - uid: mic-1\n    name: Cockpit\n    sample_rate: 48000\n    channels: 1\n  - uid: mic-2\n    name: Cockpit\n    sample_rate: 48000\n    channels: 1\n"},
+		{"duplicate uid", "microphones:\n  - uid: mic-1\n    name: Cockpit\n    sample_rate: 48000\n    channels: 1\n  - uid: mic-1\n    name: Codriver\n    sample_rate: 48000\n    channels: 1\n"},
+	} {
+		path := filepath.Join(dir, tc.name+".yaml")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load() error = nil, want error", tc.name)
+		}
+	}
+}
+
+func TestLoad_EnabledCameraRequiresDimensions(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"zero-width", "cameras:\n  - uid: cam-1\n    name: Front\n    width: 0\n    height: 1080\n    framerate: 30\n"},
+		{"zero-height", "cameras:\n  - uid: cam-1\n    name: Front\n    width: 1920\n    height: 0\n    framerate: 30\n"},
+		{"zero-framerate", "cameras:\n  - uid: cam-1\n    name: Front\n    width: 1920\n    height: 1080\n    framerate: 0\n"},
+	} {
+		path := filepath.Join(dir, tc.name+".yaml")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load() error = nil, want error", tc.name)
+		}
+	}
+}
+
+func TestLoad_DisabledCameraSkipsDimensionCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.yaml")
+	yamlContent := "cameras:\n  - uid: cam-1\n    name: Spare\n    disabled: true\n"
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("Load() error = %v, want nil (disabled camera needs no dimensions)", err)
+	}
+}
+
+func TestLoad_EnabledMicrophoneRequiresSampleRateAndChannels(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"zero-sample-rate", "microphones:\n  - uid: mic-1\n    name: Cockpit\n    sample_rate: 0\n    channels: 1\n"},
+		{"zero-channels", "microphones:\n  - uid: mic-1\n    name: Cockpit\n    sample_rate: 48000\n    channels: 0\n"},
+	} {
+		path := filepath.Join(dir, tc.name+".yaml")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load() error = nil, want error", tc.name)
+		}
+	}
+}
+
+func TestLoad_DisabledMicrophoneSkipsCaptureParamCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.yaml")
+	yamlContent := "microphones:\n  - uid: mic-1\n    name: Spare\n    disabled: true\n"
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("Load() error = %v, want nil (disabled microphone needs no capture params)", err)
+	}
+}
+
 func TestLoad_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "devices.yaml")
