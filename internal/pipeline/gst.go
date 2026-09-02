@@ -231,14 +231,6 @@ package pipeline
 //     gst_object_unref(sink);
 // }
 //
-// // set_valve_drop opens (drop=FALSE) or closes (drop=TRUE) a named valve element.
-// static void set_valve_drop(GstElement *pipeline, const char *name, gboolean drop) {
-//     GstElement *v = gst_bin_get_by_name(GST_BIN(pipeline), name);
-//     if (!v) return;
-//     g_object_set(v, "drop", drop, NULL);
-//     gst_object_unref(v);
-// }
-//
 // // set_pipeline_paused transitions the pipeline to GST_STATE_PAUSED without
 // // blocking. The SRT connection is dropped; GPU encoder becomes idle.
 // static void set_pipeline_paused(GstElement *pipeline) {
@@ -621,21 +613,4 @@ func (p *GstPipeline) GetSRTSinkStats(sinkName string) (rttMS, bandwidthMbps flo
 	var lost C.gint
 	C.get_srtsink_stats(p.pipeline, cName, &rtt, &bw, &sent, &lost)
 	return float64(rtt), float64(bw), int64(sent), int(lost)
-}
-
-// SetValve opens (drop=false) or closes (drop=true) a named valve element.
-// No-op if the element is not found or the pipeline is not running.
-func (p *GstPipeline) SetValve(name string, drop bool) {
-	cName := C.CString(name)
-	defer C.free(unsafe.Pointer(cName))
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.pipeline == nil || !p.running {
-		return
-	}
-	var d C.gboolean
-	if drop {
-		d = C.gboolean(1)
-	}
-	C.set_valve_drop(p.pipeline, cName, d)
 }

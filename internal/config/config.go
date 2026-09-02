@@ -169,6 +169,24 @@ func (c *Config) validate() error {
 			if cam.Framerate <= 0 {
 				return fmt.Errorf("camera %q: framerate must be positive", cam.Name)
 			}
+			// Stream.{Width,Height,Framerate,Bitrate} feed StreamWidth/Height/
+			// Framerate/Bitrate's zero-means-fall-back-to-capture logic above —
+			// only 0 is a valid "unset", a negative value bypasses that
+			// fallback (their checks are ">0", so a negative passes straight
+			// through) and reaches build.go's gst-launch string construction
+			// as-is, the same opaque-failure risk the capture-parameter check
+			// above already guards against.
+			if s := cam.Stream; s != nil {
+				if s.Width < 0 || s.Height < 0 {
+					return fmt.Errorf("camera %q: stream width and height must not be negative", cam.Name)
+				}
+				if s.Framerate < 0 {
+					return fmt.Errorf("camera %q: stream framerate must not be negative", cam.Name)
+				}
+				if s.Bitrate < 0 {
+					return fmt.Errorf("camera %q: stream bitrate must not be negative", cam.Name)
+				}
+			}
 		}
 	}
 
@@ -196,6 +214,14 @@ func (c *Config) validate() error {
 			}
 			if mic.Channels <= 0 {
 				return fmt.Errorf("microphone %q: channels must be positive", mic.Name)
+			}
+			if s := mic.Stream; s != nil {
+				if s.Bitrate < 0 {
+					return fmt.Errorf("microphone %q: stream bitrate must not be negative", mic.Name)
+				}
+				if s.Channels < 0 {
+					return fmt.Errorf("microphone %q: stream channels must not be negative", mic.Name)
+				}
 			}
 		}
 	}

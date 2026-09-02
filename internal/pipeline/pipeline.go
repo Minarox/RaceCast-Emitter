@@ -241,6 +241,14 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		// onStopped, if set, runs once this pipeline has fully stopped and its
 		// output file is closed — see activatePipeline.
 		onStopped func()
+		// onStarted, if set, runs once this pipeline's state change to
+		// PLAYING has been successfully issued (see StartEach) — i.e. as
+		// close to "recording actually began" as this layer can observe
+		// without a first-buffer pad probe. Used by mic record entries to
+		// stamp BWF TimeReference at start time rather than at
+		// entry-construction time, which can run well before this
+		// particular pipeline's turn in the batch (see injectBWFTimeReference).
+		onStarted func()
 		// cameraName, isMain and streamWidth/Height/Framerate are set on
 		// camera stream entries (videoOnly) only, for
 		// BandwidthCoordinator.Register — streamWidth/Height/Framerate let
@@ -317,6 +325,9 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 				return
 			}
 			pe.slot.activatePipeline(pe.label, pe.gp, pe.field, wg, pe.onStopped)
+			if pe.onStarted != nil {
+				pe.onStarted()
+			}
 			if !pe.isStream {
 				return
 			}
@@ -537,12 +548,20 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			// rather than muxing AAC with a synthetic black video track.
 			outputPath := filepath.Join(dir, fmt.Sprintf("%s_%s_audio.wav",
 				now.Format("15-04-05"), sanitize(mic.Name)))
-			startedAt := now
+			// startedAt is set by onStarted, not captured here: this loop runs
+			// over every camera and mic before startEntries actually issues
+			// any pipeline's state change, so "now" at entry-construction
+			// time can run well ahead of when this particular pipeline
+			// starts — see onStarted's doc comment.
+			var startedAt time.Time
 			consEntries = append(consEntries, entry{
 				label: label + ":record",
 				str:   BuildAudioRecordStr(mic, outputPath),
 				slot:  s,
 				field: &s.record,
+				onStarted: func() {
+					startedAt = time.Now()
+				},
 				onStopped: func() {
 					if err := injectBWFTimeReference(outputPath, startedAt, mic.SampleRate); err != nil {
 						logger.Error("[%s] BWF timecode injection failed: %v", label, err)

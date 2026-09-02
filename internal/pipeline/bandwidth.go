@@ -278,15 +278,36 @@ func (c *BandwidthCoordinator) tick() {
 			worstRTT = rttMS
 		}
 	}
-	if !anyConnected {
+	if anyConnected {
+		minSharedFloor := effectiveMax / 5
+		c.sharedBudget = adaptBitrate(c.sharedBudget, localStats{LossPct: worstLoss, RTTMS: worstRTT}, minSharedFloor, effectiveMax, &c.sharedStableCount)
+	} else if !c.anyEverConnected() {
+		// Nothing has ever connected yet (e.g. right after startup, before
+		// any camera's first SRT handshake) — there are no stats to adapt
+		// the shared budget from, and nothing to pause/resume yet either.
 		return
 	}
-
-	minSharedFloor := effectiveMax / 5
-	c.sharedBudget = adaptBitrate(c.sharedBudget, localStats{LossPct: worstLoss, RTTMS: worstRTT}, minSharedFloor, effectiveMax, &c.sharedStableCount)
+	// Note: even when every stream is currently paused (anyConnected false
+	// but something connected before), allocate/evaluateTiers must still run
+	// — pause()/resume() are only ever called from allocate(), so skipping
+	// it here would permanently strand every camera in the paused state
+	// once the shared budget ever collapsed below all their floors, with no
+	// path back to streaming short of a process restart.
 
 	c.allocate()
 	c.evaluateTiers()
+}
+
+// anyEverConnected reports whether any registered stream has completed at
+// least one SRT handshake so far (srtConnected latches true and is never
+// reset by pause — see the tick loop above and pause()).
+func (c *BandwidthCoordinator) anyEverConnected() bool {
+	for _, s := range c.streams {
+		if s.srtConnected {
+			return true
+		}
+	}
+	return false
 }
 
 // streamSpec is the pure-data view of a videoStream computeAllocation needs —

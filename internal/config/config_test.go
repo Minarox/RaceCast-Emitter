@@ -304,6 +304,48 @@ func TestLoad_DisabledMicrophoneSkipsCaptureParamCheck(t *testing.T) {
 	}
 }
 
+func TestLoad_NegativeCameraStreamFieldsRejected(t *testing.T) {
+	dir := t.TempDir()
+	base := "cameras:\n  - uid: cam-1\n    name: Front\n    width: 1920\n    height: 1080\n    framerate: 30\n    stream:\n"
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"negative-width", base + "      width: -1\n      bitrate: 4000000\n"},
+		{"negative-height", base + "      height: -1\n      bitrate: 4000000\n"},
+		{"negative-framerate", base + "      framerate: -1\n      bitrate: 4000000\n"},
+		{"negative-bitrate", base + "      bitrate: -1\n"},
+	} {
+		path := filepath.Join(dir, tc.name+".yaml")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load() error = nil, want error", tc.name)
+		}
+	}
+}
+
+func TestLoad_NegativeMicrophoneStreamFieldsRejected(t *testing.T) {
+	dir := t.TempDir()
+	base := "microphones:\n  - uid: mic-1\n    name: Cockpit\n    sample_rate: 48000\n    channels: 2\n    stream:\n"
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"negative-bitrate", base + "      bitrate: -1\n"},
+		{"negative-channels", base + "      bitrate: 128000\n      channels: -1\n"},
+	} {
+		path := filepath.Join(dir, tc.name+".yaml")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load() error = nil, want error", tc.name)
+		}
+	}
+}
+
 func TestLoad_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "devices.yaml")
