@@ -198,6 +198,26 @@ func TestLoad_MissingCameraUIDOrName(t *testing.T) {
 	}
 }
 
+func TestLoad_NameWithSRTUnsafeCharsRejected(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"camera-space", "cameras:\n  - uid: cam-1\n    name: \"Front Camera\"\n    width: 1920\n    height: 1080\n    framerate: 30\n"},
+		{"camera-ampersand", "cameras:\n  - uid: cam-1\n    name: \"Front & Rear\"\n    width: 1920\n    height: 1080\n    framerate: 30\n"},
+		{"microphone-hash", "microphones:\n  - uid: mic-1\n    name: \"Driver #1\"\n    sample_rate: 48000\n    channels: 1\n"},
+	} {
+		path := filepath.Join(dir, tc.name+".yaml")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load() error = nil, want error", tc.name)
+		}
+	}
+}
+
 func TestLoad_CameraAndMicrophoneMaySharSameUIDAndName(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "devices.yaml")

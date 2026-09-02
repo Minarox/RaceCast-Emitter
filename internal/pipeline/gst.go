@@ -288,6 +288,12 @@ func newGstPipeline(parentCtx context.Context, pipelineStr string) (*GstPipeline
 	if gerr != nil {
 		msg := C.GoString((*C.char)(unsafe.Pointer(gerr.message)))
 		C.g_error_free(gerr)
+		if gp != nil {
+			// gst_parse_launch can return a non-NULL, partially-built element
+			// alongside a recoverable-error GError (not just NULL+error for
+			// fatal ones) — without this, that partial pipeline leaks.
+			C.gst_object_unref(C.gpointer(gp))
+		}
 		return nil, fmt.Errorf("gst_parse_launch : %s", msg)
 	}
 

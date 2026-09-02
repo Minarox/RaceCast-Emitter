@@ -3,9 +3,25 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// srtNameUnsafeChars are characters that would corrupt or truncate the SRT
+// streamid query-string parameter srtCallerURI (build.go) builds from a
+// camera/microphone Name — gst-launch's own %q quoting around the whole URI
+// protects the pipeline description's tokenizer from these, but not the
+// URI's own query-string syntax one layer down (e.g. a literal "&" in Name
+// starts a new query parameter instead of staying part of streamid).
+const srtNameUnsafeChars = " &=#?/%+;"
+
+func validateStreamName(kind, name string) error {
+	if strings.ContainsAny(name, srtNameUnsafeChars) {
+		return fmt.Errorf("%s %q: name must not contain any of %q (used verbatim in the SRT streamid URI)", kind, name, srtNameUnsafeChars)
+	}
+	return nil
+}
 
 // StreamConfig holds streaming parameters. Width, Height, Framerate, Channels fall back to
 // capture values if unset. A missing or zero Bitrate disables streaming.
@@ -140,6 +156,9 @@ func (c *Config) validate() error {
 		if cam.Name == "" {
 			return fmt.Errorf("camera %d (uid %q): name is required", i+1, cam.UID)
 		}
+		if err := validateStreamName("camera", cam.Name); err != nil {
+			return err
+		}
 		if seenUID[cam.UID] {
 			return fmt.Errorf("camera %q: duplicate uid %q", cam.Name, cam.UID)
 		}
@@ -198,6 +217,9 @@ func (c *Config) validate() error {
 		}
 		if mic.Name == "" {
 			return fmt.Errorf("microphone %d (uid %q): name is required", i+1, mic.UID)
+		}
+		if err := validateStreamName("microphone", mic.Name); err != nil {
+			return err
 		}
 		if seenUID[mic.UID] {
 			return fmt.Errorf("microphone %q: duplicate uid %q", mic.Name, mic.UID)

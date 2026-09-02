@@ -61,6 +61,15 @@ type Slot struct {
 	record   *GstPipeline
 	stream   *GstPipeline
 	notFound bool
+	// starting marks a field (keyed by its own address — &s.source etc.,
+	// stable for the Slot's lifetime) whose pipeline is currently being
+	// constructed/launched: gst_element_set_state (in startInner) can block
+	// for a while, and *field itself isn't set until activatePipeline runs
+	// afterward — without this, a slow start left *field == nil looks
+	// identical to "nothing launching yet" to startEntries's gating check,
+	// letting a second Poll() cycle launch a duplicate pipeline against the
+	// same physical device before the first one finishes.
+	starting map[**GstPipeline]bool
 }
 
 func (s *Slot) IsSourceRunning() bool {
@@ -79,6 +88,14 @@ func (s *Slot) IsStreamRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stream != nil
+}
+
+// clearStarting marks field's launch attempt as finished (success or
+// failure) — see the starting field's doc comment.
+func (s *Slot) clearStarting(field **GstPipeline) {
+	s.mu.Lock()
+	delete(s.starting, field)
+	s.mu.Unlock()
 }
 
 // activatePipeline registers gp in the slot field pointed to by field, adds a
@@ -273,7 +290,13 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			e := e
 			s := e.slot
 			s.mu.Lock()
-			ok := ctx.Err() == nil && *e.field == nil
+			ok := ctx.Err() == nil && *e.field == nil && !s.starting[e.field]
+			if ok {
+				if s.starting == nil {
+					s.starting = make(map[**GstPipeline]bool)
+				}
+				s.starting[e.field] = true
+			}
 			s.mu.Unlock()
 			if !ok {
 				continue
@@ -281,6 +304,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			gp, err := newGstPipeline(ctx, e.str)
 			if err != nil {
 				logger.Error("[%s] Failed to create pipeline: %v", e.label, err)
+				s.clearStarting(e.field)
 				continue
 			}
 			if e.isStream {
@@ -319,6 +343,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 		StartEach(gpList, func(i int, err error) {
 			pe := preps[i]
+			defer pe.slot.clearStarting(pe.field)
 			if err != nil {
 				logger.Error("[%s] Failed to start pipeline: %v", pe.label, err)
 				go pe.gp.Free()
