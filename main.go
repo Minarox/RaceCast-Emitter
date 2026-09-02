@@ -4,18 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"math"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	"racecast-emitter/internal/config"
+	"racecast-emitter/internal/dashboard"
 	"racecast-emitter/internal/env"
-	"racecast-emitter/internal/modem"
 	"racecast-emitter/internal/logger"
+	"racecast-emitter/internal/modem"
 	"racecast-emitter/internal/pipeline"
 	"racecast-emitter/internal/telemetry"
 	"racecast-emitter/internal/udev"
@@ -25,25 +24,20 @@ import (
 const configFile = "devices.yaml"
 
 func main() {
+	startTime := time.Now()
 	env.Load(".env")
-	upsFlag    := flag.Bool("ups",    false, "Continuously read and display UPS values (optional: interval in seconds, default 5)")
-	modemFlag  := flag.Bool("modem",  false, "Continuously read and display modem data (GPS + network)")
+	debugModemFlag := flag.Bool("debug-modem", false, "Only log modem events to the daily log file for debugging (kernel USB faults, ModemManager state changes, periodic signal/GPS snapshot) — no recording, streaming, or telemetry")
 	recordFlag := flag.Bool("record", false, "Record only (no SRT streaming)")
 	streamFlag := flag.Bool("stream", false, "Stream only (no recording)")
 	flag.Parse()
 
-	nSet := 0
-	for _, b := range []bool{*upsFlag, *modemFlag, *recordFlag, *streamFlag} {
-		if b {
-			nSet++
-		}
-	}
-	if nSet > 1 {
-		logger.Fatal("--ups, --modem, --record and --stream are mutually exclusive")
+	if *debugModemFlag && (*recordFlag || *streamFlag) {
+		logger.Fatal("[main] --debug-modem, --record and --stream are mutually exclusive")
 	}
 
-	if *modemFlag {
-		logger.InitConsole()
+	if *debugModemFlag {
+		closeLog := logger.Init()
+		defer closeLog()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		sigCh := make(chan os.Signal, 2)
@@ -52,50 +46,23 @@ func main() {
 			<-sigCh
 			cancel()
 			<-sigCh
-			logger.Warn("Second signal — forcing exit")
+			logger.Warn("[main] Second signal — forcing exit")
 			os.Exit(0)
 		}()
-		modem.Run(ctx)
-		signal.Stop(sigCh)
-		return
-	}
-
-	if *upsFlag {
-		logger.InitConsole()
-		interval := 5 * time.Second
-		if args := flag.Args(); len(args) > 0 {
-			if n, err := strconv.ParseFloat(args[0], 64); err == nil && n >= 0.05 {
-				ms := int64(math.Round(n * 1000))
-				interval = time.Duration(ms) * time.Millisecond
-			} else {
-				logger.Fatal("[ups] Invalid interval: %q (expected a number >= 0.05)", args[0])
-			}
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		sigCh := make(chan os.Signal, 2)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		go func() {
-			<-sigCh
-			cancel()
-			<-sigCh
-			logger.Warn("Second signal — forcing exit")
-			os.Exit(0)
-		}()
-		ups.Run(ctx, interval)
+		modem.RunDiagnostics(ctx)
 		signal.Stop(sigCh)
 		return
 	}
 
 	doRecord := !*streamFlag
-	doStream  := !*recordFlag
+	doStream := !*recordFlag
 
 	closeLog := logger.Init()
 	defer closeLog()
 
 	cfg, err := config.Load(configFile)
 	if err != nil {
-		logger.Fatal("Configuration error: %v", err)
+		logger.Fatal("[main] Configuration error: %v", err)
 	}
 
 	cameraSlots := make(map[string]*pipeline.Slot, len(cfg.Cameras))
@@ -155,18 +122,58 @@ func main() {
 	})
 	defer telemConn.Close()
 
-	// Send UPS values to the server every 2 s (when streaming is active).
-	if doStream {
+	// UPS/GPS telemetry: read and recorded locally (records/<date>/data/) any
+	// time recording is on, and additionally sent to the receiver over SRT
+	// when streaming is on too — mirrors video/audio, where local recording
+	// never depends on streaming being active. doStream is passed through so
+	// each RunStream only calls Conn.Send when streaming is actually enabled;
+	// --record-only must never touch the network even if RC_SRT_HOST happens
+	// to be set, matching that flag's documented "no SRT streaming" contract.
+	if doRecord || doStream {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ups.RunStream(ctx, telemConn)
+			ups.RunStream(ctx, telemConn, doStream)
+		}()
+
+		// Single shared poller for ModemManager's signal-quality/tech D-Bus
+		// properties: RunStream, WatchConnectivity, WatchHealth and the
+		// per-camera ABR loop (feedback.go) all read modem.CachedSignalStats
+		// instead of polling D-Bus themselves — no ordering requirement, the
+		// cache just reads as "not fresh yet" until this goroutine's first tick.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			modem.WatchSignalStats(ctx)
 		}()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			modem.RunStream(ctx, telemConn)
+			modem.RunStream(ctx, telemConn, doStream)
+		}()
+	}
+
+	if doStream {
+		// Kernel-log watcher: surfaces USB power/enumeration fault signatures
+		// (undervoltage, over-current, disconnect, reset) for the modem's own
+		// bus path in the app's own log, for live debugging during a race.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			modem.WatchKernelLog(ctx)
+		}()
+
+		// Health watchdog: detects a stuck cellular data bearer (radio
+		// registered per ModemManager, but no traffic actually gets through)
+		// and recovers via a reconnect nudge, then a full modem reset if that
+		// doesn't help. WatchConnectivity below reflects its "recovering"
+		// state so streaming gets paused for the duration of a recovery
+		// attempt rather than treating the radio-only signal as gospel.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			modem.WatchHealth(ctx)
 		}()
 
 		// Connectivity watcher: pause the stream pipeline on all slots when the
@@ -200,22 +207,66 @@ func main() {
 
 	events, err := udev.Listen(ctx)
 	if err != nil {
-		logger.Fatal("Failed to open netlink udev socket: %v", err)
+		logger.Fatal("[udev] Failed to open netlink udev socket: %v", err)
 	}
+
+	// Full-screen console status view, replacing scrolling log output for the
+	// rest of this run (the JSON log file is unaffected). Works for record-only
+	// and stream-only modes too — the relevant lines just report "disabled".
+	// Started only once init can no longer logger.Fatal (which os.Exit(1)s
+	// without running deferred cleanup — the dashboard's own defer needs to
+	// run to leave the terminal in a sane state).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dashboard.Run(ctx, dashboard.Deps{
+			StartTime:   startTime,
+			Cfg:         cfg,
+			CameraSlots: cameraSlots,
+			MicSlots:    micSlots,
+			TelemConn:   telemConn,
+			DoRecord:    doRecord,
+			DoStream:    doStream,
+		})
+	}()
 
 	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream}
 	if doStream {
 		pollOpts.NotifyClose = func(name string) { _ = telemConn.SendStreamClose(name) }
+
+		// Shared video bandwidth budget across every streaming camera — see
+		// bandwidth.go. Only meaningful while actually streaming; no reason to
+		// run its allocation loop in --record-only mode.
+		bwCoord := pipeline.NewBandwidthCoordinator(ctx)
+		pollOpts.Bandwidth = bwCoord
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bwCoord.Run()
+		}()
 	}
 
 	// The control goroutine is NOT tracked in wg (only pipeline goroutines are).
 	// This prevents wg.Wait() from blocking on StartAll's CGo get_state call.
 	go func() {
 		pipeline.Poll(ctx, pollOpts, cfg, cameraSlots, micSlots, &wg)
+
+		// Fallback poll, independent of udev: a pipeline that errors out for a
+		// reason other than a physical unplug (encoder hiccup, SRT/GStreamer
+		// bus error, transient NVMM failure under thermal stress) never gets a
+		// udev "add" event, so without this ticker the affected slot would stay
+		// down for the rest of the run. Poll() is a cheap no-op for every slot
+		// that's already running, so a slow interval here just bounds the
+		// worst-case time-to-recovery for this class of failure.
+		fallback := time.NewTicker(15 * time.Second)
+		defer fallback.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-fallback.C:
+				pipeline.Poll(ctx, pollOpts, cfg, cameraSlots, micSlots, &wg)
 			case ev, ok := <-events:
 				if !ok {
 					return
@@ -243,7 +294,7 @@ func main() {
 	// ── Shutdown ─────────────────────────────────────────────────────────────
 	// Wait for the first Ctrl+C / SIGTERM.
 	<-sigCh
-	logger.Info("Signal received — stopping pipelines...")
+	logger.Info("[main] Signal received — stopping pipelines...")
 
 	// Cancel the main context: stops the control goroutine, udev listener,
 	// telemetry, ups/modem streams, and prevents new pipelines from starting.
@@ -252,7 +303,7 @@ func main() {
 	// Second signal → force-exit immediately (no matter the state of cleanup).
 	go func() {
 		<-sigCh
-		logger.Warn("Second signal received — forcing exit")
+		logger.Warn("[main] Second signal received — forcing exit")
 		os.Exit(1)
 	}()
 
@@ -280,7 +331,7 @@ func main() {
 		s.Stop()
 	}
 
-	logger.Info("Waiting for pipelines to stop... (Ctrl+C again to force)")
+	logger.Info("[main] Waiting for pipelines to stop... (Ctrl+C again to force)")
 	wg.Wait()
-	logger.Info("All pipelines stopped.")
+	logger.Info("[main] All pipelines stopped.")
 }
