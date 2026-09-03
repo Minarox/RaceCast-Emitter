@@ -62,6 +62,51 @@ func TestDecideAction_ThresholdTriggersSoftNudge(t *testing.T) {
 	}
 }
 
+// TestDecideAction_RecoversAfterRadioDropoutDuringSoftGrace covers a gap
+// TestDecideAction_RecoversDuringSoftGrace doesn't: WatchHealth's loop calls
+// decideAction only when the radio itself is registered (see its own
+// `stats.Quality == 0` continue) — if the radio drops out entirely while a
+// soft nudge is in flight, decideAction simply isn't called for as long as
+// that lasts, leaving st.stage frozen at stageSoftGrace and isRecovering()
+// true well past graceUntil. That's fine only because the reachable branch
+// at the top of decideAction doesn't consult graceUntil at all — recovery
+// must be detected correctly no matter how long that gap was, not just
+// while still inside the original grace window.
+func TestDecideAction_RecoversAfterRadioDropoutDuringSoftGrace(t *testing.T) {
+	tune := testTuning()
+	st := &watchdogState{}
+	now := time.Now()
+
+	for i := 0; i < tune.failThreshold; i++ {
+		action, _, _ := decideAction(false, now, st, tune)
+		now = now.Add(10 * time.Second)
+		if i == tune.failThreshold-1 && action != actionSoftNudge {
+			t.Fatalf("expected actionSoftNudge at threshold, got %v", action)
+		}
+	}
+	if st.stage != stageSoftGrace {
+		t.Fatalf("stage after soft nudge = %v, want stageSoftGrace", st.stage)
+	}
+
+	// Radio drops out entirely for far longer than softGrace — simulating
+	// WatchHealth's continue path, decideAction is simply never called
+	// during this gap (state stays exactly as it was).
+	now = now.Add(10 * time.Minute)
+	if !st.graceUntil.Before(now) {
+		t.Fatalf("test setup invalid: graceUntil %v is not before now %v, this isn't exercising the past-grace-window case", st.graceUntil, now)
+	}
+
+	// Radio (and the data path) come back — recovery must still be detected
+	// correctly even though now is long past the original graceUntil.
+	action, recovered, tripped := decideAction(true, now, st, tune)
+	if action != actionNone || !recovered || tripped {
+		t.Fatalf("recovered after radio dropout: got action=%v recovered=%v tripped=%v, want actionNone/true/false", action, recovered, tripped)
+	}
+	if st.stage != stageNormal {
+		t.Fatalf("stage after recovery = %v, want stageNormal", st.stage)
+	}
+}
+
 func TestDecideAction_RecoversDuringSoftGrace(t *testing.T) {
 	tune := testTuning()
 	st := &watchdogState{}

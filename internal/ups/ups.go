@@ -179,7 +179,14 @@ func Read() (Data, bool) {
 	if !ok1 || !ok2 || !ok3 {
 		return Data{}, false
 	}
+	return decode(vRaw, aRaw, wRaw), true
+}
 
+// decode converts the three raw INA219 register values (BE16, as read())
+// into engineering units — split out from Read() so this arithmetic (the
+// >>3 bus-voltage shift, current/power's int16 sign handling, the
+// percentage clamp) is testable without real I2C hardware.
+func decode(vRaw, aRaw, wRaw uint16) Data {
 	v := float64(vRaw>>3) * 0.004
 	a := float64(int16(aRaw)) * currentLSB / 1000
 	w := float64(int16(wRaw)) * powerLSB
@@ -192,5 +199,5 @@ func Read() (Data, bool) {
 		Current:    round2(a),
 		Power:      round2(w),
 		Percentage: round2(p),
-	}, true
+	}
 }

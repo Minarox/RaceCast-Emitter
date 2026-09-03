@@ -254,7 +254,16 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		return
 	}
 
-	srtPort := srtPortStart()
+	// Only resolved (and only warns on a missing/invalid RC_SRT_PORT) when
+	// streaming is actually enabled — srtPort is never read anywhere below
+	// when opts.Stream is false, but Poll runs on a periodic ticker, so
+	// calling this unconditionally in --record-only mode would otherwise
+	// warn on every single poll and flood logger's 8-entry recent-issues
+	// ring with a warning about a port nothing is using.
+	var srtPort int
+	if opts.Stream {
+		srtPort = srtPortStart()
+	}
 
 	type entry struct {
 		label       string

@@ -80,6 +80,13 @@ func (r *Recorder) Write(payload []byte) error {
 	if r.f == nil || r.date != date {
 		if r.f != nil {
 			r.f.Close()
+			// Nil'd immediately, not just on the success path below: if
+			// MkdirAll/OpenFile then fails, r.f must not keep pointing at
+			// this now-closed file — a later Close() call (at shutdown)
+			// would otherwise close it a second time and surface a
+			// misleading "file already closed" error for a file this
+			// Recorder no longer considers open.
+			r.f = nil
 		}
 		dir := filepath.Join(recordsDir, date, "data")
 		if err := os.MkdirAll(dir, 0o755); err != nil {

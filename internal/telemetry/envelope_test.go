@@ -165,3 +165,51 @@ func TestRecorder_CloseWithoutWriteIsSafe(t *testing.T) {
 		t.Errorf("second Close: %v", err)
 	}
 }
+
+// TestRecorder_FailedRotationLeavesFCleared forces the rotation MkdirAll
+// inside Write to fail (by putting a plain file where the date directory
+// needs to go) and verifies the Recorder doesn't keep a dangling reference
+// to the file it just closed — r.f must end up nil, not a closed handle
+// that a later Close() would then close a second time and report a
+// misleading "already closed" error for. Also verifies the Recorder
+// actually recovers and writes successfully once the obstruction is gone.
+func TestRecorder_FailedRotationLeavesFCleared(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	date := time.Now().Format("2006-01-02")
+	if err := os.MkdirAll(recordsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A plain file where Write needs to MkdirAll a directory (records/<date>)
+	// makes that MkdirAll fail with ENOTDIR.
+	blockPath := filepath.Join(recordsDir, date)
+	if err := os.WriteFile(blockPath, []byte("blocking"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := NewRecorder("gps")
+	defer rec.Close()
+
+	payload, _, err := BuildEnvelope("modem", struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Write(payload); err == nil {
+		t.Fatal("Write() error = nil, want an error (blocked by a file at the date-directory path)")
+	}
+	if rec.f != nil {
+		t.Error("after a failed rotation, r.f should be nil, not a dangling closed file handle")
+	}
+
+	// Clear the obstruction and confirm the Recorder recovers on the next Write.
+	if err := os.Remove(blockPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Write(payload); err != nil {
+		t.Fatalf("Write() after clearing the obstruction: %v", err)
+	}
+	wantPath := filepath.Join(recordsDir, date, "data", "gps.jsonl")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("expected file %s to exist after recovery: %v", wantPath, err)
+	}
+}

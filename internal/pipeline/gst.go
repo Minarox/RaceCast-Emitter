@@ -147,22 +147,16 @@ package pipeline
 //     gst_object_unref(enc);
 // }
 //
-// // prefix_timestamp_probe prepends an 8-byte big-endian UTC nanosecond
-// // (CLOCK_REALTIME) capture timestamp to every buffer flowing through the
-// // pad it's attached to — see attach_timestamp_probe below. RaceCast-Receiver
-// // must strip these 8 bytes back off before feeding the rest to its decoder;
-// // both sides have to be deployed together, since a mismatched pair either
-// // corrupts every decoded frame (old receiver, new emitter) or silently eats
-// // 8 bytes of real bitstream data (new receiver, old emitter).
+// // stamp_one_buffer prepends the 8-byte big-endian UTC nanosecond
+// // (CLOCK_REALTIME) capture timestamp header used by both
+// // prefix_timestamp_probe (single-buffer case) and stamp_buffer_list_func
+// // (buffer-list case) below.
 // //
 // // gst_buffer_make_writable() may return a different (copied) GstBuffer than
 // // the one passed in — always use its return value, never the original
 // // pointer, afterward. gst_buffer_insert_memory() takes ownership of the
 // // GstMemory it's given.
-// static GstPadProbeReturn prefix_timestamp_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
-//     GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
-//     if (!buf) return GST_PAD_PROBE_OK;
-//
+// static GstBuffer *stamp_one_buffer(GstBuffer *buf) {
 //     struct timespec ts;
 //     clock_gettime(CLOCK_REALTIME, &ts);
 //     uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
@@ -177,7 +171,40 @@ package pipeline
 //
 //     buf = gst_buffer_make_writable(buf);
 //     gst_buffer_insert_memory(buf, 0, hdr);
-//     GST_PAD_PROBE_INFO_DATA(info) = buf;
+//     return buf;
+// }
+//
+// // stamp_buffer_list_func is gst_buffer_list_foreach's per-buffer callback
+// // for the GST_PAD_PROBE_TYPE_BUFFER_LIST case below: GstBaseSink's default
+// // render_list behavior (which srtsink doesn't override) calls render() once
+// // per buffer in the list, so each one becomes its own SRT message and needs
+// // its own 8-byte prefix, not just the first.
+// static gboolean stamp_buffer_list_func(GstBuffer **buffer, guint idx, gpointer user_data) {
+//     *buffer = stamp_one_buffer(*buffer);
+//     return TRUE;
+// }
+//
+// // prefix_timestamp_probe prepends the capture timestamp (see
+// // stamp_one_buffer) to every buffer, or every buffer within a buffer list,
+// // flowing through the pad it's attached to — see attach_timestamp_probe
+// // below. RaceCast-Receiver must strip these 8 bytes back off before feeding
+// // the rest to its decoder; both sides have to be deployed together, since a
+// // mismatched pair either corrupts every decoded frame (old receiver, new
+// // emitter) or silently eats 8 bytes of real bitstream data (new receiver,
+// // old emitter).
+// static GstPadProbeReturn prefix_timestamp_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+//     if (info->type & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
+//         GstBufferList *list = GST_PAD_PROBE_INFO_BUFFER_LIST(info);
+//         if (!list) return GST_PAD_PROBE_OK;
+//         list = gst_buffer_list_make_writable(list);
+//         gst_buffer_list_foreach(list, stamp_buffer_list_func, NULL);
+//         GST_PAD_PROBE_INFO_DATA(info) = list;
+//         return GST_PAD_PROBE_OK;
+//     }
+//
+//     GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+//     if (!buf) return GST_PAD_PROBE_OK;
+//     GST_PAD_PROBE_INFO_DATA(info) = stamp_one_buffer(buf);
 //     return GST_PAD_PROBE_OK;
 // }
 //
@@ -185,13 +212,16 @@ package pipeline
 // // the named element (srtsink, for stream pipelines) so every buffer is
 // // stamped right before it's handed to libsrt — as close to the actual send
 // // as this pipeline gets, after every encode/convert step has already run.
-// // No-op if the named element doesn't exist.
+// // Probes both buffers and buffer lists (see prefix_timestamp_probe) since
+// // an upstream element is free to push either. No-op if the named element
+// // doesn't exist.
 // static void attach_timestamp_probe(GstElement *pipeline, const char *name) {
 //     GstElement *el = gst_bin_get_by_name(GST_BIN(pipeline), name);
 //     if (!el) return;
 //     GstPad *pad = gst_element_get_static_pad(el, "sink");
 //     if (pad) {
-//         gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, prefix_timestamp_probe, NULL, NULL);
+//         gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST,
+//             prefix_timestamp_probe, NULL, NULL);
 //         gst_object_unref(pad);
 //     }
 //     gst_object_unref(el);
@@ -316,22 +346,6 @@ func (p *GstPipeline) SetOnError(fn func()) {
 	p.mu.Unlock()
 }
 
-// Start sets the pipeline to PLAYING.
-// For multiple concurrent pipelines without Nvidia noise, use StartAll.
-func (p *GstPipeline) Start() error {
-	silenceMu.Lock()
-	defer silenceMu.Unlock()
-	var out, errfd C.int
-	C.silence_begin(&out, &errfd)
-	defer C.silence_end(out, errfd)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.running {
-		return nil
-	}
-	return p.startInner()
-}
-
 // startInner sets the pipeline to PLAYING.
 // silenceMu must be held, silence_begin called, and p.mu held by the caller.
 func (p *GstPipeline) startInner() error {
@@ -428,19 +442,6 @@ func (p *GstPipeline) Cancel() {
 	p.cancel()
 }
 
-// WaitDrain waits for internal goroutines to stop after an EOS.
-// On timeout, cancels the context to force shutdown.
-func (p *GstPipeline) WaitDrain(timeout time.Duration) {
-	done := make(chan struct{})
-	go func() { p.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(timeout):
-		p.cancel()
-		p.wg.Wait()
-	}
-}
-
 // SetNull sets the pipeline to GST_STATE_NULL (releases hardware resources).
 func (p *GstPipeline) SetNull() {
 	silenceMu.Lock()
@@ -455,17 +456,7 @@ func (p *GstPipeline) SetNull() {
 	}
 }
 
-// Stop gracefully stops the pipeline: EOS -> drain -> NULL.
-func (p *GstPipeline) Stop() {
-	p.mu.Lock()
-	p.running = false
-	p.mu.Unlock()
-	p.SendEOS()
-	p.WaitDrain(10 * time.Second)
-	p.SetNull()
-}
-
-// Free releases GStreamer resources. Call after Stop or SetNull.
+// Free releases GStreamer resources. Call after SetNull.
 func (p *GstPipeline) Free() {
 	silenceMu.Lock()
 	defer silenceMu.Unlock()

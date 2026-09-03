@@ -235,12 +235,22 @@ func TestEvenize(t *testing.T) {
 }
 
 func TestReducedResolution_ScalesAndKeepsEven(t *testing.T) {
-	w, h := reducedResolution(960, 540)
-
-	if w%2 != 0 || h%2 != 0 {
-		t.Errorf("reduced dimensions must be even, got %dx%d", w, h)
+	tests := []struct {
+		width, height int
+		wantW, wantH  int
+	}{
+		// 960*0.65=624 (already even), 540*0.65=351 -> evenize(351)=350.
+		{960, 540, 624, 350},
+		// 1920*0.65=1248 (already even), 1080*0.65=702 (already even).
+		{1920, 1080, 1248, 702},
+		// 1280*0.65=832 (already even), 720*0.65=468 (already even).
+		{1280, 720, 832, 468},
 	}
-	if w >= 960 || h >= 540 {
-		t.Errorf("reduced dimensions %dx%d not smaller than original 960x540", w, h)
+	for _, tt := range tests {
+		w, h := reducedResolution(tt.width, tt.height)
+		if w != tt.wantW || h != tt.wantH {
+			t.Errorf("reducedResolution(%d, %d) = (%d, %d), want (%d, %d)",
+				tt.width, tt.height, w, h, tt.wantW, tt.wantH)
+		}
 	}
 }
