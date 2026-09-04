@@ -238,6 +238,15 @@ type PollOptions struct {
 	// per-stream ABR ceiling — see bandwidth.go. Required whenever Stream is
 	// true and any camera has streaming enabled; audio is unaffected.
 	Bandwidth *BandwidthCoordinator
+	// FakeDevices replaces every camera/microphone's source pipeline with a
+	// synthetic one (videotestsrc pattern=snow / audiotestsrc
+	// wave=white-noise — real noise data, not silence or a static image) and
+	// skips devices.FindVideo/FindALSA entirely, so record/stream/SRT
+	// transmission can be tested without any physical camera or microphone
+	// attached. Only the source stage differs; record/stream pipelines,
+	// ABR, and the bandwidth coordinator are unaffected since they only ever
+	// read from the same inter-element channels either way.
+	FakeDevices bool
 }
 
 // Poll scans all configured sources and starts any pipeline that is not yet
@@ -456,13 +465,21 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			continue
 		}
 		label := "camera:" + sanitize(cam.Name)
-		dev, err := devices.FindVideo(cam.UID)
-		if err != nil {
-			if !s.notFound {
-				logger.Warn("[%s] Not found (UID: %s), waiting...", label, cam.UID)
-				s.notFound = true
+		var srcStr, dev string
+		if opts.FakeDevices {
+			dev = "fake:snow"
+			srcStr = BuildVideoSourceStrFake(cam)
+		} else {
+			var err error
+			dev, err = devices.FindVideo(cam.UID)
+			if err != nil {
+				if !s.notFound {
+					logger.Warn("[%s] Not found (UID: %s), waiting...", label, cam.UID)
+					s.notFound = true
+				}
+				continue
 			}
-			continue
+			srcStr = BuildVideoSourceStr(cam, dev)
 		}
 		s.notFound = false
 		switch {
@@ -475,7 +492,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 		srcEntries = append(srcEntries, entry{
 			label:      label + ":source",
-			str:        BuildVideoSourceStr(cam, dev),
+			str:        srcStr,
 			slot:       s,
 			field:      &s.source,
 			streamName: StreamKey(cam.Name, "camera"),
@@ -496,13 +513,21 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			continue
 		}
 		label := "mic:" + sanitize(mic.Name)
-		alsaDev, err := devices.FindALSA(mic.UID)
-		if err != nil {
-			if !s.notFound {
-				logger.Warn("[%s] Not found (UID: %s), waiting...", label, mic.UID)
-				s.notFound = true
+		var srcStr, alsaDev string
+		if opts.FakeDevices {
+			alsaDev = "fake:white-noise"
+			srcStr = BuildAudioSourceStrFake(mic)
+		} else {
+			var err error
+			alsaDev, err = devices.FindALSA(mic.UID)
+			if err != nil {
+				if !s.notFound {
+					logger.Warn("[%s] Not found (UID: %s), waiting...", label, mic.UID)
+					s.notFound = true
+				}
+				continue
 			}
-			continue
+			srcStr = BuildAudioSourceStr(mic, alsaDev)
 		}
 		s.notFound = false
 		switch {
@@ -515,7 +540,7 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 		}
 		srcEntries = append(srcEntries, entry{
 			label:      label + ":source",
-			str:        BuildAudioSourceStr(mic, alsaDev),
+			str:        srcStr,
 			slot:       s,
 			field:      &s.source,
 			streamName: StreamKey(mic.Name, "microphone"),

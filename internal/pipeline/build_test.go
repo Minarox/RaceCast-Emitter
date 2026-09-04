@@ -155,6 +155,52 @@ func TestBuildVideoSourceStr_FormatBranches(t *testing.T) {
 	})
 }
 
+func TestBuildVideoSourceStrFake_UsesSnowPatternAndSameChannels(t *testing.T) {
+	cam := config.Camera{Name: "Front", Width: 1920, Height: 1080, Framerate: 30}
+	got := BuildVideoSourceStrFake(cam)
+
+	if !strings.Contains(got, "videotestsrc pattern=snow") {
+		t.Errorf("missing snow test pattern source: %s", got)
+	}
+	if strings.Contains(got, "v4l2src") {
+		t.Errorf("fake source must not touch v4l2src: %s", got)
+	}
+	if !strings.Contains(got, "video/x-raw,format=I420,width=1920,height=1080,framerate=30/1") {
+		t.Errorf("missing matching I420 caps: %s", got)
+	}
+	// Must tee into the exact same inter-channel names as the real source,
+	// so record/stream pipelines can't tell the difference.
+	recCh, strCh := interChannel("v", cam.Name)
+	if !strings.Contains(got, "channel=\""+recCh+"\"") {
+		t.Errorf("missing record channel %q: %s", recCh, got)
+	}
+	if !strings.Contains(got, "channel=\""+strCh+"\"") {
+		t.Errorf("missing stream channel %q: %s", strCh, got)
+	}
+}
+
+func TestBuildAudioSourceStrFake_UsesWhiteNoiseAndSameChannels(t *testing.T) {
+	mic := config.Microphone{Name: "Cockpit", SampleRate: 48000, Channels: 2}
+	got := BuildAudioSourceStrFake(mic)
+
+	if !strings.Contains(got, "audiotestsrc wave=white-noise") {
+		t.Errorf("missing white-noise test source: %s", got)
+	}
+	if strings.Contains(got, "alsasrc") {
+		t.Errorf("fake source must not touch alsasrc: %s", got)
+	}
+	if !strings.Contains(got, "audio/x-raw,format=S16LE,rate=48000,channels=2") {
+		t.Errorf("missing matching PCM caps: %s", got)
+	}
+	recCh, strCh := interChannel("a", mic.Name)
+	if !strings.Contains(got, "channel=\""+recCh+"\"") {
+		t.Errorf("missing record channel %q: %s", recCh, got)
+	}
+	if !strings.Contains(got, "channel=\""+strCh+"\"") {
+		t.Errorf("missing stream channel %q: %s", strCh, got)
+	}
+}
+
 func TestBuildVideoStreamStr_IntraRefreshBranches(t *testing.T) {
 	cam := config.Camera{
 		Name: "Front", Width: 1920, Height: 1080, Framerate: 30,

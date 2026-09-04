@@ -24,6 +24,7 @@ Run modes (mutually exclusive flags):
 ./racecast-emitter --record        # recording only, no SRT streaming
 ./racecast-emitter --stream        # streaming only, no local recording
 ./racecast-emitter --debug-modem   # standalone: log-only modem diagnostics, no recording/streaming/telemetry
+./racecast-emitter --fake-devices  # combine with the above: synthetic snow/white-noise sources instead of real cameras/mics
 ```
 
 In the normal/record/stream modes, the console is taken over by a full-screen live status dashboard (see `internal/dashboard` below) rather than scrolling log lines — the log file keeps recording everything regardless.
@@ -104,6 +105,10 @@ Every envelope built by `BuildEnvelope` is also recorded locally: each `RunStrea
 ### Device discovery (`internal/devices`, `internal/udev`)
 
 Cameras/mics are matched by udev UID (from `devices.yaml`) rather than `/dev/videoN` index, because Jetson enumeration order isn't stable across reboots or USB replug. `devices.FindVideo`/`FindALSA` prefer `/dev/v4l/by-id` or `/dev/snd/by-id` symlinks and fall back to scanning with `udevadm`. `internal/udev.Listen` opens a raw `NETLINK_KOBJECT_UEVENT` socket directly (no external library) to trigger re-polling on device hotplug.
+
+### Fake devices (`--fake-devices`, `PollOptions.FakeDevices` in `internal/pipeline`)
+
+For testing recording/streaming/SRT transmission without any camera or microphone physically attached to the Jetson. Only the **source** stage of `pipeline.Poll`'s phase 1 changes: `devices.FindVideo`/`FindALSA` are skipped entirely (a device can never go "not found" in this mode) and `build.go`'s `BuildVideoSourceStrFake`/`BuildAudioSourceStrFake` are used instead of `BuildVideoSourceStr`/`BuildAudioSourceStr` — `videotestsrc pattern=snow` (real pseudo-random pixel noise, not a static image) and `audiotestsrc wave=white-noise` (real generated audio samples, not silence), each capped to the same width/height/framerate/rate/channels `devices.yaml` declares and fed into the exact same `rc:v`/`rc:a` inter-element channel names the real sources use. Everything downstream — record, stream, ABR (`feedback.go`), the shared bandwidth budget (`bandwidth.go`), timecode stamping, BWF injection, SRT transmission — is unmodified and can't tell the difference, since it only ever reads from those inter-channels. Mutually exclusive with `--debug-modem` (which never touches cameras/mics at all). `main.go` logs a `[main] --fake-devices active` warning at startup so it can't be mistaken for a real run in the log file.
 
 ### Modem (`internal/modem`)
 

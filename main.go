@@ -29,10 +29,14 @@ func main() {
 	debugModemFlag := flag.Bool("debug-modem", false, "Only log modem events to the daily log file for debugging (kernel USB faults, ModemManager state changes, periodic signal/GPS snapshot) — no recording, streaming, or telemetry")
 	recordFlag := flag.Bool("record", false, "Record only (no SRT streaming)")
 	streamFlag := flag.Bool("stream", false, "Stream only (no recording)")
+	fakeDevicesFlag := flag.Bool("fake-devices", false, "Replace every camera/microphone with a synthetic source (snow test pattern + white noise — real generated data, not silence) instead of capturing from real hardware, to test recording/streaming/SRT transmission without cameras or mics attached")
 	flag.Parse()
 
 	if *debugModemFlag && (*recordFlag || *streamFlag) {
 		logger.Fatal("[main] --debug-modem, --record and --stream are mutually exclusive")
+	}
+	if *debugModemFlag && *fakeDevicesFlag {
+		logger.Fatal("[main] --debug-modem does not touch cameras/microphones — --fake-devices has no effect with it")
 	}
 
 	if *debugModemFlag {
@@ -63,6 +67,10 @@ func main() {
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		logger.Fatal("[main] Configuration error: %v", err)
+	}
+
+	if *fakeDevicesFlag {
+		logger.Warn("[main] --fake-devices active — every camera/microphone is a synthetic snow/white-noise source, NOT real hardware")
 	}
 
 	cameraSlots := make(map[string]*pipeline.Slot, len(cfg.Cameras))
@@ -230,7 +238,7 @@ func main() {
 		})
 	}()
 
-	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream}
+	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream, FakeDevices: *fakeDevicesFlag}
 	if doStream {
 		pollOpts.NotifyClose = func(name string) { _ = telemConn.SendStreamClose(name) }
 

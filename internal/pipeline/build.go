@@ -116,6 +116,26 @@ func BuildVideoSourceStr(cam config.Camera, dev string) string {
 		fmt.Sprintf("t. ! queue max-size-buffers=2 leaky=downstream ! intervideosink channel=%q sync=false", strCh)
 }
 
+// BuildVideoSourceStrFake builds the always-running capture pipeline for a
+// camera in --fake-devices mode: a synthetic "snow" test pattern (real
+// pseudo-random pixel data, not a static image) in place of a v4l2 capture,
+// so the record/stream/SRT path can be exercised end-to-end without a
+// physical camera attached. Feeds the same two inter-element channels as
+// BuildVideoSourceStr, so nothing downstream (record, stream, ABR, the
+// bandwidth coordinator) needs to know the difference.
+func BuildVideoSourceStrFake(cam config.Camera) string {
+	recCh, strCh := interChannel("v", cam.Name)
+	i420Caps := fmt.Sprintf(
+		"video/x-raw,format=I420,width=%d,height=%d,framerate=%d/1",
+		cam.Width, cam.Height, cam.Framerate,
+	)
+	source := fmt.Sprintf("videotestsrc pattern=snow is-live=true ! %s", i420Caps)
+	return source +
+		" ! tee name=t " +
+		fmt.Sprintf("t. ! queue max-size-buffers=2 leaky=downstream ! intervideosink channel=%q sync=false ", recCh) +
+		fmt.Sprintf("t. ! queue max-size-buffers=2 leaky=downstream ! intervideosink channel=%q sync=false", strCh)
+}
+
 // BuildVideoRecordStr builds the recording pipeline for a camera.
 // Reads frames from the inter-element record channel and encodes to H.264 in
 // a fragmented QuickTime (.mov) file, carrying an embedded SMPTE timecode
@@ -219,6 +239,24 @@ func BuildAudioSourceStr(mic config.Microphone, alsaDev string) string {
 			"at. ! queue max-size-buffers=8 leaky=downstream ! interaudiosink channel=%q sync=false "+
 			"at. ! queue max-size-buffers=8 leaky=downstream ! interaudiosink channel=%q sync=false",
 		alsaDev, mic.SampleRate, mic.Channels, caps, recCh, strCh,
+	)
+}
+
+// BuildAudioSourceStrFake builds the always-running capture pipeline for a
+// microphone in --fake-devices mode: real white-noise samples
+// (audiotestsrc wave=white-noise, not silence) in place of an ALSA capture,
+// so the audio record/stream/SRT path can be exercised without a physical
+// microphone attached. Feeds the same two inter-element channels as
+// BuildAudioSourceStr.
+func BuildAudioSourceStrFake(mic config.Microphone) string {
+	recCh, strCh := interChannel("a", mic.Name)
+	caps := fmt.Sprintf("audio/x-raw,format=S16LE,rate=%d,channels=%d", mic.SampleRate, mic.Channels)
+	return fmt.Sprintf(
+		"audiotestsrc wave=white-noise is-live=true ! %s ! "+
+			"tee name=at "+
+			"at. ! queue max-size-buffers=8 leaky=downstream ! interaudiosink channel=%q sync=false "+
+			"at. ! queue max-size-buffers=8 leaky=downstream ! interaudiosink channel=%q sync=false",
+		caps, recCh, strCh,
 	)
 }
 
