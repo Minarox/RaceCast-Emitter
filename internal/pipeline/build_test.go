@@ -243,6 +243,46 @@ func TestBuildVideoStreamStr_IntraRefreshBranches(t *testing.T) {
 	})
 }
 
+func TestBuildVideoStreamStr_FramerateConversion(t *testing.T) {
+	t.Setenv("RC_SRT_HOST", "1.2.3.4")
+
+	t.Run("stream framerate equals capture framerate: no videorate", func(t *testing.T) {
+		cam := config.Camera{
+			Name: "Route", Width: 1920, Height: 1080, Framerate: 30,
+			Stream: &config.StreamConfig{Bitrate: 1_000_000, Framerate: 30},
+		}
+		got := BuildVideoStreamStr(cam, 9000)
+		if strings.Contains(got, "videorate") {
+			t.Errorf("videorate should be absent when framerates match: %s", got)
+		}
+	})
+
+	t.Run("stream framerate differs from capture framerate: videorate inserted before nvvidconv", func(t *testing.T) {
+		cam := config.Camera{
+			Name: "Habitacle", Width: 1920, Height: 1080, Framerate: 30,
+			Stream: &config.StreamConfig{Bitrate: 400_000, Framerate: 25, Width: 854, Height: 480},
+		}
+		got := BuildVideoStreamStr(cam, 9000)
+		if !strings.Contains(got, "videorate ! video/x-raw,framerate=25/1 ! nvvidconv") {
+			t.Errorf("missing videorate ahead of nvvidconv with the target framerate: %s", got)
+		}
+		if !strings.Contains(got, "width=854,height=480,framerate=25/1") {
+			t.Errorf("missing matching NVMM dst caps: %s", got)
+		}
+	})
+
+	t.Run("stream framerate unset falls back to capture framerate: no videorate", func(t *testing.T) {
+		cam := config.Camera{
+			Name: "Front", Width: 1920, Height: 1080, Framerate: 30,
+			Stream: &config.StreamConfig{Bitrate: 1_000_000},
+		}
+		got := BuildVideoStreamStr(cam, 9000)
+		if strings.Contains(got, "videorate") {
+			t.Errorf("videorate should be absent when Stream.Framerate is unset (falls back to capture rate): %s", got)
+		}
+	})
+}
+
 func TestBuildVideoRecordStr_StampsTimecodeBeforeNvvidconv(t *testing.T) {
 	cam := config.Camera{Name: "Front", Width: 1920, Height: 1080, Framerate: 30}
 	got := BuildVideoRecordStr(cam, "records/out.mov")

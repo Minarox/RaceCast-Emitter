@@ -191,6 +191,21 @@ func BuildVideoStreamStr(cam config.Camera, srtPort int) string {
 		cam.StreamWidth(), cam.StreamHeight(), cam.StreamFramerate(),
 	)
 
+	// nvvidconv only scales/converts colorspace — it passes the input
+	// framerate straight through, so its sink caps (cam.Framerate) and the
+	// dstCaps framerate above must already match or gst_parse_launch fails
+	// to link at pipeline creation (verified empirically: 854x480@25 stream
+	// caps against a 30fps capture silently broke that camera's video
+	// stream until an E2E test caught it). videorate is inserted upstream,
+	// still on plain video/x-raw (CPU buffers, before the NVMM hop), only
+	// when the two differ — it drops/duplicates whole frames to hit the
+	// target rate (no re-encode, negligible CPU cost) so the hardware
+	// encoder below is unaffected either way.
+	rateConv := ""
+	if cam.StreamFramerate() != cam.Framerate {
+		rateConv = fmt.Sprintf("videorate ! video/x-raw,framerate=%d/1 ! ", cam.StreamFramerate())
+	}
+
 	var enc string
 	if intraRefreshPeriod() > 0 {
 		enc = fmt.Sprintf(
@@ -218,6 +233,7 @@ func BuildVideoStreamStr(cam config.Camera, srtPort int) string {
 	// one temporal unit per srt_recvmsg without re-assembly overhead.
 	return fmt.Sprintf(
 		"intervideosrc channel=%q ! %s ! "+
+			rateConv+
 			"nvvidconv ! capsfilter name=%s caps=%q ! "+
 			"%s ! srtsink name=srtsink uri=%q sync=false wait-for-connection=false",
 		strCh, srcCaps, resolutionCapsfilterName, dstCaps, enc,
