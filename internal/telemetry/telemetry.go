@@ -179,6 +179,31 @@ func streamCloseMessage(streamKey string) []byte {
 	return fmt.Appendf(nil, `{"type":"stream_close","stream":%q}`, streamKey)
 }
 
+// SendFrameTime notifies the receiver of one video frame's real capture
+// time over a dedicated side-channel Conn (streamid "frametime" — see
+// main.go), instead of embedding it in the video bitstream itself: srtsink
+// silently splits any buffer over its ~1316-byte default SRT payload size
+// into multiple separate wire messages, which corrupts an in-band
+// byte-prefix trick for every frame split that way (virtually every
+// encoded video frame — this is exactly what RaceCast-Receiver's CLAUDE.md
+// "GStreamer bridge" section documents as the actual cause of video never
+// decoding). Audio frames stay well under that threshold and keep the
+// older, still-correct in-band mechanism (AttachTimestampPrefix) — this is
+// video-only. Best-effort: errors are silently ignored, matching
+// SendStreamClose — the receiver falls back to measuring wall-clock
+// arrival gaps if a frametime message isn't delivered (see
+// RaceCast-Receiver's gst.go).
+func (c *Conn) SendFrameTime(streamKey string, seq uint64, capturedAt time.Time) error {
+	return c.Send(frameTimeMessage(streamKey, seq, capturedAt))
+}
+
+// frameTimeMessage builds the JSON payload SendFrameTime sends — split out
+// from it so the message shape is testable without a live SRT socket.
+func frameTimeMessage(streamKey string, seq uint64, capturedAt time.Time) []byte {
+	return fmt.Appendf(nil, `{"type":"frametime","stream":%q,"seq":%d,"ts":%q}`,
+		streamKey, seq, capturedAt.UTC().Format(time.RFC3339Nano))
+}
+
 // IsConnected reports whether the SRT socket is currently dialed. Cheap
 // (mutex-protected bool read, no I/O) — safe to poll from a console dashboard.
 func (c *Conn) IsConnected() bool {

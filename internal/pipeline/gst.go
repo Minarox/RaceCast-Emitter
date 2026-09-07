@@ -254,8 +254,8 @@ package pipeline
 //     if (stats) {
 //         gst_structure_get_double(stats, "rtt-ms",         rtt_ms);
 //         gst_structure_get_double(stats, "bandwidth-mbps", bandwidth_mbps);
-//         gst_structure_get_int64 (stats, "packets-sent-total",      pkt_sent_total);
-//         gst_structure_get_int   (stats, "packets-sent-loss-total", pkt_loss_total);
+//         gst_structure_get_int64 (stats, "packets-sent",      pkt_sent_total);
+//         gst_structure_get_int   (stats, "packets-sent-lost", pkt_loss_total);
 //         gst_structure_free(stats);
 //     }
 //     gst_object_unref(sink);

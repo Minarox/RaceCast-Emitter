@@ -13,6 +13,7 @@ import (
 	"racecast-emitter/internal/config"
 	"racecast-emitter/internal/devices"
 	"racecast-emitter/internal/logger"
+	"racecast-emitter/internal/telemetry"
 )
 
 const recordsDir = "records"
@@ -247,6 +248,39 @@ type PollOptions struct {
 	// ABR, and the bandwidth coordinator are unaffected since they only ever
 	// read from the same inter-element channels either way.
 	FakeDevices bool
+	// FrameTimeConn is the dedicated side-channel (streamid "frametime") a
+	// video stream entry sends its per-frame capture timestamps over —
+	// see AttachFrameTimeProbe (frametime.go) and forwardFrameTimes below
+	// for why this replaced embedding them in the video bitstream itself.
+	// A separate Conn from the shared ups/modem telemetry one deliberately:
+	// frame timing is much higher-frequency and more latency-sensitive, and
+	// sharing one Conn's mutex would let a stalled send of one delay the
+	// other exactly when good timing matters most. Required whenever Stream
+	// is true and any camera has streaming enabled; audio is unaffected.
+	FrameTimeConn *telemetry.Conn
+}
+
+// forwardFrameTimes reads capture timestamps off ch (fed by
+// AttachFrameTimeProbe's pad probe, see frametime.go) and forwards each one
+// to the receiver over conn as a seq-numbered frametime message — see
+// PollOptions.FrameTimeConn's comment for why this is a separate
+// side-channel rather than embedding timestamps in the video bitstream
+// itself. Exits when ctx is cancelled (the stream pipeline stopped); ch is
+// never explicitly closed since this is its only reader — left for GC once
+// nothing references it any more.
+func forwardFrameTimes(ctx context.Context, conn *telemetry.Conn, streamKey string, ch <-chan time.Time) {
+	var seq uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ts := <-ch:
+			seq++
+			if err := conn.SendFrameTime(streamKey, seq, ts); err != nil {
+				logger.Warn("[frametime:%s] Send: %v", streamKey, err)
+			}
+		}
+	}
 }
 
 // Poll scans all configured sources and starts any pipeline that is not yet
@@ -344,11 +378,42 @@ func Poll(ctx context.Context, opts PollOptions, cfg *config.Config, cameraSlots
 			if e.isStream {
 				// Must happen before StartEach below transitions this pipeline
 				// to PLAYING, so every buffer — not just ones lucky enough to
-				// arrive after the probe is attached — carries the capture
-				// timestamp RaceCast-Receiver now expects on every SRT media
-				// message. Record pipelines have no srtsink, so this is a
-				// harmless no-op for them (isStream is false there).
-				gp.AttachTimestampPrefix("srtsink")
+				// arrive after the probe is attached — is covered. Video and
+				// audio diverge here: video delivers capture timestamps over
+				// the dedicated frametime side-channel (frametime.go) instead
+				// of embedding them in the bitstream — see PollOptions.
+				// FrameTimeConn's comment for why. Record pipelines have no
+				// srtsink, so neither branch runs for them (isStream is false
+				// there).
+				if e.videoOnly && opts.FrameTimeConn != nil {
+					ch := make(chan time.Time, 8)
+					handle := gp.AttachFrameTimeProbe("srtsink", ch)
+					streamKey := StreamKey(e.cameraName, "camera")
+					ftCtx, ftCancel := context.WithCancel(ctx)
+					origOnStarted, origOnStopped := e.onStarted, e.onStopped
+					e.onStarted = func() {
+						if origOnStarted != nil {
+							origOnStarted()
+						}
+						go forwardFrameTimes(ftCtx, opts.FrameTimeConn, streamKey, ch)
+					}
+					e.onStopped = func(stoppedGp *GstPipeline) {
+						// Safe to release the handle here without racing an
+						// in-flight probe callback: onStopped only runs after
+						// SetNull() completes (see its own doc comment above),
+						// and GST_STATE_NULL is a synchronous transition that
+						// guarantees this pipeline's streaming thread — the
+						// only thing that could invoke the probe — has fully
+						// stopped by the time SetNull() returns.
+						ftCancel()
+						handle.Delete()
+						if origOnStopped != nil {
+							origOnStopped(stoppedGp)
+						}
+					}
+				} else {
+					gp.AttachTimestampPrefix("srtsink")
+				}
 			}
 			field := e.field
 			streamName := e.streamName

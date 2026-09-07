@@ -130,6 +130,14 @@ func main() {
 	})
 	defer telemConn.Close()
 
+	// Dedicated side-channel for video capture timestamps (streamid
+	// "frametime") — deliberately a separate Conn from telemConn above, not
+	// reused: see PollOptions.FrameTimeConn's comment in internal/pipeline
+	// for why. One-way (onRecv nil): the receiver never sends anything back
+	// over this connection.
+	frameTimeConn := telemetry.NewConn(ctx, "frametime", nil)
+	defer frameTimeConn.Close()
+
 	// UPS/GPS telemetry: read and recorded locally (records/<date>/data/) any
 	// time recording is on, and additionally sent to the receiver over SRT
 	// when streaming is on too — mirrors video/audio, where local recording
@@ -241,6 +249,7 @@ func main() {
 	pollOpts := pipeline.PollOptions{Record: doRecord, Stream: doStream, FakeDevices: *fakeDevicesFlag}
 	if doStream {
 		pollOpts.NotifyClose = func(name string) { _ = telemConn.SendStreamClose(name) }
+		pollOpts.FrameTimeConn = frameTimeConn
 
 		// Shared video bandwidth budget across every streaming camera — see
 		// bandwidth.go. Only meaningful while actually streaming; no reason to
