@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	dbus "github.com/godbus/dbus/v5"
@@ -220,14 +221,20 @@ func probeTargets() []string {
 }
 
 // probeReachable reports whether the modem's own route can reach the
-// internet. The dial's source address is pinned to the modem interface's
-// current IPv4 address, not left to the routing table's default choice —
-// on a Jetson that also has Wi-Fi up (as it typically does outside a
-// stage, for local debugging), an unpinned probe could succeed over Wi-Fi
-// while the cellular bearer is actually the one that's stuck, masking
-// exactly the fault this watchdog exists to catch.
+// internet. The dial is bound to the modem interface via SO_BINDTODEVICE,
+// not just to its IPv4 address, so it always egresses over the cellular
+// link regardless of routing table metrics — on a Jetson that also has
+// Wi-Fi up (as it typically does outside a stage, for local debugging)
+// with a lower-metric default route than the modem's, binding the source
+// IP alone doesn't pin the egress interface: the kernel still picks the
+// route by destination, sends the probe out over Wi-Fi with a source IP
+// that network doesn't recognize, and the dial hangs until it times out —
+// a false "unreachable" that looks identical to a genuinely stuck bearer
+// and needlessly resets a perfectly healthy modem. SO_BINDTODEVICE forces
+// the actual egress interface, closing that gap.
 func probeReachable(ctx context.Context) bool {
-	srcIP, err := interfaceIPv4(modemIface())
+	iface := modemIface()
+	srcIP, err := interfaceIPv4(iface)
 	if err != nil {
 		// Interface down or without an address yet is itself a clear
 		// "not reachable via the modem" — no need to spend a dial timeout.
@@ -238,6 +245,15 @@ func probeReachable(ctx context.Context) bool {
 	dialer := &net.Dialer{
 		Timeout:   timeout,
 		LocalAddr: &net.TCPAddr{IP: srcIP},
+		Control: func(_, _ string, c syscall.RawConn) error {
+			var sockErr error
+			if err := c.Control(func(fd uintptr) {
+				sockErr = syscall.BindToDevice(int(fd), iface)
+			}); err != nil {
+				return err
+			}
+			return sockErr
+		},
 	}
 	for _, target := range probeTargets() {
 		conn, err := dialer.DialContext(ctx, "tcp", target)
