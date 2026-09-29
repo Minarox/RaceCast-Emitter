@@ -168,7 +168,8 @@ patched copies (see [`vendor/README.md`](vendor/README.md)).
 ## Contributing
 
 Development happens on `dev`, and changes reach `main` through pull requests. Each pull request is checked
-by [GitHub Actions](.github/workflows/ci.yml): formatting, Clippy with warnings as errors, and unit tests.
+by [GitHub Actions](.github/workflows/ci.yml): a [TruffleHog](https://github.com/trufflesecurity/trufflehog)
+secret scan of the new commits, formatting, Clippy with warnings as errors, and unit tests.
 GitHub's runners have no Jetson hardware, so capture, encoding and streaming are still tested on the car's
 Jetson.
 

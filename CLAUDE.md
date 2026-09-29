@@ -132,7 +132,8 @@ them in French, but write every file in English.
   (`videotestsrc`/`audiotestsrc`, `ffprobe`, local `livekit-server --dev`, fault-injection scripts:
   unplugging, `kill -9`, full disk, network cut).
 - **Branches and CI**: development on `dev`, pull requests to `main`. `.github/workflows/ci.yml` runs on
-  every pull request to `main` (GitHub arm64 runner, no Jetson hardware): `cargo fmt --check`,
+  every pull request to `main` (GitHub arm64 runner, no Jetson hardware): TruffleHog secret scan of the
+  new commits (built-in detectors + LiveKit ones in `.github/trufflehog.yml`), `cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings` (any warning fails), `cargo test`. It overrides the Jetson
   settings of `.cargo/config.toml` (clang path, `libnvbufsurface`): keep the two in step.
 

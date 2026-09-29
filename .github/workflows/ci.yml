@@ -1,8 +1,9 @@
 # Checks of every pull request to main. Also runs on main itself, which fills the caches that pull
 # requests reuse (a pull request can read the caches of its base branch).
 #
-# GitHub's runners have no Jetson hardware: this covers formatting, lints and the unit tests (pure logic,
-# CLAUDE.md). Capture, encoding and streaming are tested by hand on the Jetson (docs/SPEC.md §12).
+# GitHub's runners have no Jetson hardware: this covers leaked secrets, formatting, lints and the unit
+# tests (pure logic, CLAUDE.md). Capture, encoding and streaming are tested by hand on the Jetson
+# (docs/SPEC.md §12).
 name: CI
 
 on:
@@ -23,6 +24,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  secrets:
+    name: Secret scan
+    # TruffleHog runs as a Docker image: any runner fits.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the scan covers every commit of the pull request (or of the push).
+          fetch-depth: 0
+      - uses: trufflesecurity/trufflehog@v3.97.9
+        with:
+          # Built-in detectors plus the LiveKit ones (.github/trufflehog.yml). Any finding, verified or
+          # not, fails the job.
+          extra_args: --config .github/trufflehog.yml
+
   fmt:
     name: Formatting
     runs-on: ubuntu-24.04-arm
