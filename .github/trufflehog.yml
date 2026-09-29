@@ -1,0 +1,14 @@
+# Custom TruffleHog detectors (used by .github/workflows/ci.yml). TruffleHog has no LiveKit detector:
+# these catch the LiveKit credentials of .env if they ever end up in a commit. Their findings cannot be
+# verified, so the CI reports unverified results too.
+detectors:
+  - name: LiveKit API secret
+    keywords:
+      - secret
+    regex:
+      secret: '(?i)api[_-]?secret["'']?\s*[:=]\s*["'']?([A-Za-z0-9]{32,})'
+  - name: LiveKit API key
+    keywords:
+      - livekit
+    regex:
+      key: '(?i)livekit[_-]?api[_-]?key["'']?\s*[:=]\s*["'']?(API[A-Za-z0-9]{12})\b'
