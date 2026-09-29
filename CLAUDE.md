@@ -131,6 +131,10 @@ them in French, but write every file in English.
   that logic separate from hardware access. **No hardware mocks**: integration tests on the Jetson
   (`videotestsrc`/`audiotestsrc`, `ffprobe`, local `livekit-server --dev`, fault-injection scripts:
   unplugging, `kill -9`, full disk, network cut).
+- **Branches and CI**: development on `dev`, pull requests to `main`. `.github/workflows/ci.yml` runs on
+  every pull request to `main` (GitHub arm64 runner, no Jetson hardware): `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings` (any warning fails), `cargo test`. It overrides the Jetson
+  settings of `.cargo/config.toml` (clang path, `libnvbufsurface`): keep the two in step.
 
 ## Commands
 
@@ -138,7 +142,7 @@ them in French, but write every file in English.
 source "$HOME/.cargo/env"
 cargo build --release          # binary: target/release/racecast-emitter
 cargo test                     # unit tests (pure logic)
-cargo clippy --all-targets && cargo fmt --check
+cargo clippy --all-targets -- -D warnings && cargo fmt --check   # same checks as the CI
 
 ./target/release/racecast-emitter --env-file .env --check-config   # validate .env and devices.yml
 ./target/release/racecast-emitter --env-file .env                  # manual run

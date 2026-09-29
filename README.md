@@ -165,6 +165,13 @@ The build settings are in `.cargo/config.toml` (clang 23, `-lnvbufsurface`), so 
 Do not run `cargo update` on the LiveKit crates: they are pinned on purpose, and `livekit` / `libwebrtc` are
 patched copies (see [`vendor/README.md`](vendor/README.md)).
 
+## Contributing
+
+Development happens on `dev`, and changes reach `main` through pull requests. Each pull request is checked
+by [GitHub Actions](.github/workflows/ci.yml): formatting, Clippy with warnings as errors, and unit tests.
+GitHub's runners have no Jetson hardware, so capture, encoding and streaming are still tested on the car's
+Jetson.
+
 ## Repository layout
 
 | Path | Contents |

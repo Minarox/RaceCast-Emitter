@@ -1,0 +1,92 @@
+# Checks of every pull request to main. Also runs on main itself, which fills the caches that pull
+# requests reuse (a pull request can read the caches of its base branch).
+#
+# GitHub's runners have no Jetson hardware: this covers formatting, lints and the unit tests (pure logic,
+# CLAUDE.md). Capture, encoding and streaming are tested by hand on the Jetson (docs/SPEC.md §12).
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  check:
+    name: Clippy and tests
+    # aarch64, like the Jetson.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      # Same clang as on the Jetson (deploy/INSTALL.md): the LiveKit SDK needs clang >= 21.
+      LLVM_VERSION: 23.1.2
+      # .cargo/config.toml is written for the Jetson. RUSTFLAGS replaces its rustflags, which link
+      # libnvbufsurface (absent here). Without the Jetson Multimedia API sources, the SDK builds without its
+      # Jetson encoder, which the unit tests do not need.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libudev-dev \
+            libglib2.0-dev libx11-dev libdrm-dev libgbm-dev
+
+      - name: Cache clang
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/llvm
+          key: llvm-${{ env.LLVM_VERSION }}-${{ runner.arch }}
+
+      - name: Download clang
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          name="LLVM-$LLVM_VERSION-Linux-ARM64"
+          mkdir -p ~/llvm
+          # Only the compiler and its headers (~400 MB of the 2.5 GB release).
+          curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.xz" \
+            | tar xJ -C ~/llvm --strip-components=1 \
+              "$name/bin/clang-${LLVM_VERSION%%.*}" "$name/bin/clang" "$name/bin/clang++" "$name/lib/clang"
+
+      - name: Use clang
+        # Overrides the Jetson paths of .cargo/config.toml ([env] never replaces a variable already set).
+        run: |
+          echo "CC=$HOME/llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$HOME/llvm/bin/clang++" >> "$GITHUB_ENV"
+          ~/llvm/bin/clang --version
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --locked
