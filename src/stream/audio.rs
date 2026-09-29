@@ -13,9 +13,11 @@ use crate::capture::modes::SampleFormat;
 /// Converts interleaved little-endian PCM to 16-bit samples (keeps the most significant bits).
 pub fn to_i16(pcm: &[u8], format: SampleFormat) -> Vec<i16> {
     match format {
-        SampleFormat::S16 => pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect(),
-        SampleFormat::S24 => pcm.chunks_exact(3).map(|b| i16::from_le_bytes([b[1], b[2]])).collect(),
-        SampleFormat::S32 => pcm.chunks_exact(4).map(|b| i16::from_le_bytes([b[2], b[3]])).collect(),
+        SampleFormat::S16 => pcm.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect(),
+        SampleFormat::S24 => pcm.as_chunks::<3>().0.iter().map(|&[_, lo, hi]| i16::from_le_bytes([lo, hi])).collect(),
+        SampleFormat::S32 => {
+            pcm.as_chunks::<4>().0.iter().map(|&[_, _, lo, hi]| i16::from_le_bytes([lo, hi])).collect()
+        }
     }
 }
 

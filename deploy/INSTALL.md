@@ -66,7 +66,7 @@ experiments), `livekit-server` (only for local tests, see step 8).
 ## 3. Rust and clang 23
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # stable, edition 2024 (≥ 1.85)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # stable, ≥ 1.88 (edition 2024, `time` ≥ 0.3.47)
 source "$HOME/.cargo/env"
 
 mkdir -p ~/src && cd ~/src
