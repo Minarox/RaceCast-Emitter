@@ -128,7 +128,8 @@ them in French, but write every file in English.
     bitrate change): console logs go to stderr, never `println!` outside `--check-config`.
 - **Tests**: unit tests **only on pure logic** (timecode, BWF, NMEA, UPS conversions, mode selection,
   config/validation/paths, protocol JSON, stream sizing, modem safeguards), added along the way → keep
-  that logic separate from hardware access. **No hardware mocks**: integration tests on the Jetson
+  that logic separate from hardware access. A test that touches GStreamer types calls `gst::init()` itself
+  (tests run in any order, in parallel). **No hardware mocks**: integration tests on the Jetson
   (`videotestsrc`/`audiotestsrc`, `ffprobe`, local `livekit-server --dev`, fault-injection scripts:
   unplugging, `kill -9`, full disk, network cut).
 - **Branches and CI**: development on `dev`, pull requests to `main`. `.github/workflows/ci.yml` runs on

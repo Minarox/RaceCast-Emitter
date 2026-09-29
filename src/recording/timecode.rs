@@ -63,6 +63,8 @@ mod tests {
 
     #[test]
     fn capture_time_uses_running_time() {
+        // Segments need an initialized GStreamer; tests run in any order, so do not rely on another one.
+        gst::init().unwrap();
         let base = gst::ClockTime::from_seconds(1_000);
         let pts = gst::ClockTime::from_mseconds(1_500);
         assert_eq!(capture_unix_ns(base, None, pts), 1_001_500_000_000);
