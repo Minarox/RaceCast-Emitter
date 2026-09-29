@@ -1,0 +1,107 @@
+diff -ru a/libwebrtc/Cargo.toml libwebrtc/Cargo.toml
+--- a/libwebrtc/Cargo.toml
++++ libwebrtc/Cargo.toml
+@@ -110,3 +110,7 @@
+ 
+ [target.'cfg(target_os = "android")'.dependencies.jni]
+ version = "0.21"
++
++# RaceCast: vendored third-party code, its warnings are not ours to fix.
++[lints.rust]
++warnings = "allow"
+diff -ru a/libwebrtc/src/native/rtp_parameters.rs libwebrtc/src/native/rtp_parameters.rs
+--- a/libwebrtc/src/native/rtp_parameters.rs
++++ libwebrtc/src/native/rtp_parameters.rs
+@@ -11,6 +11,9 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++//
++// Modified for RaceCast-Emitter (2026): `bitrate_priority` carried to and from libwebrtc instead of
++// being reset to the default. See vendor/README.md.
+ 
+ use webrtc_sys::{rtp_parameters as sys_rp, webrtc as sys_webrtc};
+ 
+@@ -95,6 +98,7 @@
+             max_bitrate: value.has_max_bitrate_bps.then_some(value.max_bitrate_bps as u64),
+             max_framerate: value.has_max_framerate.then_some(value.max_framerate),
+             priority: value.network_priority.into(),
++            bitrate_priority: value.bitrate_priority,
+             rid: value.rid,
+             scale_resolution_down_by: value
+                 .has_scale_resolution_down_by
+@@ -248,7 +252,7 @@
+             has_scale_resolution_down_by: value.scale_resolution_down_by.is_some(),
+             scale_resolution_down_by: value.scale_resolution_down_by.unwrap_or_default(),
+             adaptive_ptime: false,
+-            bitrate_priority: sys_rp::DEFAULT_BITRATE_PRIORITY,
++            bitrate_priority: value.bitrate_priority,
+             has_min_bitrate_bps: false,
+             min_bitrate_bps: 0,
+             has_num_temporal_layers: false,
+diff -ru a/libwebrtc/src/rtp_parameters.rs libwebrtc/src/rtp_parameters.rs
+--- a/libwebrtc/src/rtp_parameters.rs
++++ libwebrtc/src/rtp_parameters.rs
+@@ -11,6 +11,9 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++//
++// Modified for RaceCast-Emitter (2026): `bitrate_priority` field added to `RtpEncodingParameters`.
++// See vendor/README.md.
+ 
+ use crate::rtp_transceiver::RtpTransceiverDirection;
+ 
+@@ -134,6 +137,10 @@
+     pub max_bitrate: Option<u64>,
+     pub max_framerate: Option<f64>,
+     pub priority: Priority,
++    /// Relative share of the available bandwidth given to this sender when it is short (WebRTC
++    /// `bitrate_priority`, 1.0 by default; the value of the first encoding applies to the whole sender).
++    /// RaceCast patch: carried to and from libwebrtc instead of being reset to the default.
++    pub bitrate_priority: f64,
+     pub rid: String,
+     pub scale_resolution_down_by: Option<f64>,
+     /// RTP scalability mode (e.g. "L3T3_KEY"). Required to enable true
+@@ -171,6 +178,7 @@
+             max_bitrate: None,
+             max_framerate: None,
+             priority: Priority::Low,
++            bitrate_priority: 1.0,
+             rid: String::default(),
+             scale_resolution_down_by: None,
+             scalability_mode: None,
+diff -ru a/livekit/Cargo.toml livekit/Cargo.toml
+--- a/livekit/Cargo.toml
++++ livekit/Cargo.toml
+@@ -214,3 +214,7 @@
+     "macros",
+     "time",
+ ]
++
++# RaceCast: vendored third-party code, its warnings are not ours to fix.
++[lints.rust]
++warnings = "allow"
+diff -ru a/livekit/src/room/track/local_video_track.rs livekit/src/room/track/local_video_track.rs
+--- a/livekit/src/room/track/local_video_track.rs
++++ livekit/src/room/track/local_video_track.rs
+@@ -11,6 +11,9 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++//
++// Modified for RaceCast-Emitter (2026): `LocalVideoTrack::transceiver()` made public. See
++// vendor/README.md.
+ 
+ use std::{
+     fmt::{Debug, Display},
+@@ -318,7 +321,8 @@
+         self.inner.events.lock().unmuted.replace(Box::new(f));
+     }
+ 
+-    pub(crate) fn transceiver(&self) -> Option<RtpTransceiver> {
++    /// RaceCast patch: public, so that the application can set the sender's bitrate priority.
++    pub fn transceiver(&self) -> Option<RtpTransceiver> {
+         self.inner.info.read().transceiver.clone()
+     }
+ 

@@ -1,0 +1,31 @@
+# systemd service for RaceCast-Emitter (docs/SPEC.md §9, §9c).
+# Installed as /etc/systemd/system/racecast.service by deploy/install.sh.
+
+[Unit]
+Description=RaceCast Emitter (capture, local recording, LiveKit streaming)
+Documentation=file:///home/jetson/Projects/RaceCast-Emitter/docs/SPEC.md
+# No dependency on network-online.target: recording must start at boot even without a network.
+After=ModemManager.service
+# Unlimited restarts: the program must never stay down.
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=jetson
+Group=jetson
+SupplementaryGroups=video render audio i2c dialout
+WorkingDirectory=/home/jetson/Projects/RaceCast-Emitter
+ExecStart=/home/jetson/Projects/RaceCast-Emitter/target/release/racecast-emitter --env-file /home/jetson/Projects/RaceCast-Emitter/.env
+# systemctl reload racecast: re-reads devices.yml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+# Restart if the program hangs: pings every 5 s (half the timeout), a late ping is logged. Hang → back
+# up in ~13 s (10 s + RestartSec + startup).
+WatchdogSec=10
+# The program finalizes its files within 15 s; after that SIGKILL (fragmented .mov files stay readable).
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

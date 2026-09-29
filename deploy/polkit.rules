@@ -1,0 +1,11 @@
+// RaceCast: ModemManager actions needed by racecast.service, which runs outside any desktop session
+// (docs/SPEC.md §9c). Installed as /etc/polkit-1/rules.d/50-racecast.rules by deploy/install.sh.
+//   Location:       Location.Setup (GNSS in unmanaged mode), Location.GetLocation (cell id)
+//   Device.Control: Signal.Setup (extended signal values), Modem.Reset (restart safeguard, SPEC §9)
+polkit.addRule(function (action, subject) {
+    if (subject.user == "jetson" &&
+        (action.id == "org.freedesktop.ModemManager1.Location" ||
+         action.id == "org.freedesktop.ModemManager1.Device.Control")) {
+        return polkit.Result.YES;
+    }
+});

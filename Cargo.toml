@@ -1,0 +1,51 @@
+[package]
+name = "racecast-emitter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+chrono = "0.4"
+dotenvy = "0.15"
+futures-util = { version = "0.3", default-features = false }
+gstreamer = { version = "0.25", features = ["v1_24"] }
+gstreamer-app = { version = "0.25", features = ["v1_24"] }
+gstreamer-video = { version = "0.25", features = ["v1_24"] }
+i2cdev = "0.6"
+# LiveKit SDK: pinned consistent set (0.9.2 is broken, see docs/SPEC.md §6).
+libwebrtc = "=0.3.48"
+livekit = { version = "=0.9.1", features = ["rustls-tls-native-roots"] }
+livekit-common = "=0.1.3" # 0.1.4 pulls livekit-protocol 0.8 (incompatible with livekit 0.9.1)
+livekit-api = { version = "=0.7.1", default-features = false, features = ["access-token", "services", "rustls-tls-native-roots"] }
+livekit-data-stream = "=0.1.5"
+livekit-signaling = "=0.1.2"
+livekit-token = "=0.1.2"
+webrtc-sys = "=0.3.45"
+rustix = { version = "1", features = ["fs", "event", "stdio", "termios"] }
+sd-notify = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+thiserror = "2"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+udev = "0.9"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[profile.release]
+# Readable backtraces in panic logs, without the weight of full debug info.
+debug = "line-tables-only"
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["test-util"] }
+
+# LiveKit SDK with the RaceCast patch (bitrate priority of a video sender, SPEC §6): copies of the
+# pinned crates with the diff in vendor/sdk.patch, see vendor/README.md.
+[patch.crates-io]
+libwebrtc = { path = "vendor/libwebrtc" }
+livekit = { path = "vendor/livekit" }

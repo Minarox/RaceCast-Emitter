@@ -1,0 +1,8 @@
+/target
+.env
+
+# Data written by the program (default paths from .env.example)
+/records/
+/logs/
+/devices.yml
+/devices.yml.last-good
