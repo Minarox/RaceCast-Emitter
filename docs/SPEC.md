@@ -259,8 +259,8 @@ Implemented in step 3. Notes on the columns:
      (1.0 for the other tracks). When the uplink is short, the main camera keeps most of it and the others
      give way, **no stream is stopped** (the automatic pause of the secondary cameras, built then removed on
      2026-09-28, stays out). Details: "Prioritizing a stream" below;
-  3. **highlighting in the front end**: participant attribute `main_camera=<track name>` (empty without a
-     main camera) and `car.main_camera` in the room metadata.
+  3. **highlighting in the front end**: participant attribute `main_camera=<track name>` (absent without a
+     main camera: LiveKit deletes an attribute set to an empty string) and `car.main_camera` in the room metadata.
   The camera is identified in `devices.yml` by its **physical USB port** (`/dev/v4l/by-path`), reliable with
   fixed wiring and valid offline once saved.
 - **Prioritizing a stream** (study of 2026-09-28; `degradation_preference` and RTP priority implemented):
@@ -365,7 +365,11 @@ Implemented in step 3. Notes on the columns:
     server does not know it. Same IPv4 preference as signaling (Orange proxy, IPv6 443 blocked). Fed by
     the telemetry sources: every CSV sample also updates its section, whether local recording runs or not.
   - Room created by the Jetson (`create_room`, idempotent) with a long `departure_timeout`, so that the
-    state survives the Jetson's absence. Front end: "last updated X ago" based on `ts`.
+    state survives the Jetson's absence. Front end: "last updated X ago" based on `ts`. `create_room`
+    does **not** change the timeouts of a room that already exists (tested on the server on 2026-10-05).
+    If a viewer's join creates the room (car absent for more than 24 h), that room would get the server's
+    default timeouts. Viewer tokens therefore carry the same room configuration (`roomConfig`, 24 h
+    timeouts, `docs/PROTOCOL.md`).
   - System designed for **a single car** (one Jetson per room): no write conflicts.
   - Bandwidth: **a single request per update on the Jetson side**, whatever the number of viewers; the
     fan-out to each viewer is done by the server (homelab upstream bandwidth). The Jetson receives the
@@ -595,6 +599,13 @@ To be validated in practice, by priority:
 1. **Timecode sync in DaVinci Resolve Studio**: import and playback of the `.mov` files (finalized and
    interrupted) ✅ validated by the user on 2026-09-25. Multi-source sync to validate with the
    `~/racecast-tests/sync/` set (2 cameras + 2 simultaneous BWF microphones, constant 30 fps).
+   2026-10-05: the timeline sync of Resolve is not offered, because the `.mov` files have no audio. The
+   timecodes are consistent (both `.mov` files start at 15:24:18:12, the BWF files at 15:24:18.438 and
+   .440 on 2026-09-29). Next: the user tries the timecode-based tools (Media Pool *Auto Sync Audio > Based
+   on Timecode*, multicam clip with *Angle Sync: Timecode*). **Fallback decided**: every `.mov` gets an
+   audio track that is always present and **silent**, whether or not the camera has a microphone. The real
+   sound stays in the BWF files. It would come from a silent source inside the video pipeline, with no link
+   to the microphone tasks.
 2. **LiveKit over 5G**: the streaming is implemented and validated on the LAN and on the real server over
    Wi-Fi (§12). **Blocking over 5G**: inbound IPv6 TCP 443 to the reverse-proxy host is dropped by the
    Livebox (§12). Fix: open TCP 443 over IPv6 to that host in the box's IPv6 firewall (or remove the

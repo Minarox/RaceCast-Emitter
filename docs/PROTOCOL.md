@@ -14,6 +14,13 @@ end relies on. Any breaking change increments the metadata version `v`.
 The room outlives the car's connection: when the car is offline (tunnel, no 5G), its participant and tracks
 disappear but the room metadata keeps the last known state.
 
+**Viewer tokens must carry the same room configuration**: `roomConfig` with `empty_timeout` and
+`departure_timeout` set to 86400 s. After 24 h without the car, the room is gone, and the next viewer's
+join creates it again. The server applies the token's configuration only to a room created by that join.
+The car's `CreateRoom` does not change the timeouts of a room that already exists. Without this
+configuration, such a room would get the server defaults and close shortly after the car leaves, taking
+the last known state with it.
+
 ## Tracks
 
 | Kind | Source | Codec | Name |
@@ -33,7 +40,7 @@ disappear but the room metadata keeps the last known state.
 
 | Attribute | Value |
 |---|---|
-| `main_camera` | Track name of the main camera, or empty when none is designated |
+| `main_camera` | Track name of the main camera. **Absent** when none is designated: LiveKit deletes an attribute set to an empty string |
 
 ## Room metadata
 
