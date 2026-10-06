@@ -208,6 +208,7 @@ impl Session {
 
         let main = entries.values().find(|e| e.main && matches!(e.media, Media::Video { .. })).map(|e| e.name.clone());
         if main != self.main_camera {
+            // An empty value deletes the attribute: absent = no main camera (docs/PROTOCOL.md).
             let value = main.clone().unwrap_or_default();
             match participant.set_attributes(HashMap::from([("main_camera".to_string(), value)])).await {
                 Ok(()) => self.main_camera = main,
